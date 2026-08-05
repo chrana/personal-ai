@@ -2,6 +2,7 @@ import json
 import boto3
 from tools.base import Tool, ToolResult
 from tools.browser import BrowserTool
+from tools.secrets import get_secret
 
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 MODEL = "us.anthropic.claude-sonnet-4-6"
@@ -13,7 +14,7 @@ TOOLS: dict[str, Tool] = {
 TOOL_DEFINITIONS = [
     {
         "name": "download_utility_bill",
-        "description": "Download a utility bill PDF from a provider website. Checks S3 cache first, only uses browser if not cached. Properties: windmill, bellcrest, blair-athol, rosselini. Providers: enbridge.",
+        "description": "Download a utility bill PDF from a provider website. Checks S3 cache first, only uses browser if not cached.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -36,18 +37,42 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def get_property_context() -> str:
+    try:
+        config = get_secret("personal-ai/config")
+        properties = config["properties"]
+        lines = ["Your properties:"]
+        for slug, info in properties.items():
+            providers = ", ".join(info["utilities"].keys())
+            lines.append(f"  - {slug}: {info['address']} (utilities: {providers})")
+        return "\n".join(lines)
+    except:
+        return ""
+
+
+SYSTEM_PROMPT = """You are a personal AI assistant for a property owner who manages multiple rental properties. You have tool access for downloading utility bills and other tasks.
+
+{property_context}
+
+When the user asks about "my bill" or a utility without specifying a property, ask which property they mean OR use context from the conversation to infer it. If they've been talking about a specific property, use that one.
+
+When the user asks about bill contents, amounts, usage — and you've already downloaded the bill in this conversation — refer to the tool result data. If you haven't downloaded it yet, offer to do so.
+
+Be concise and helpful. Don't ask for information you already know from context."""
+
+
 async def run_tool_call(name: str, input_data: dict) -> ToolResult:
     if name == "download_utility_bill":
         return await TOOLS["browser"].run(action="download_utility_bill", **input_data)
     return ToolResult(success=False, error=f"Unknown tool: {name}")
 
 
-async def orchestrate(user_message: str, system_context: str = "") -> dict:
-    messages = [{"role": "user", "content": user_message}]
+async def orchestrate(messages: list, memory_context: str = "") -> dict:
+    property_context = get_property_context()
+    system = SYSTEM_PROMPT.format(property_context=property_context)
 
-    system = "You are a personal AI assistant with tool access. Use tools when the user asks you to perform actions. Be concise."
-    if system_context:
-        system += f"\n\n{system_context}"
+    if memory_context:
+        system += f"\n\nRelevant memories from past conversations:\n{memory_context}"
 
     response = bedrock.invoke_model(
         modelId=MODEL,

@@ -4,6 +4,7 @@ import sqlite3
 import boto3
 import chromadb
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.responses import HTMLResponse
 
 app = FastAPI()
 
@@ -101,6 +102,84 @@ def hello():
     return {"status": "alive"}
 
 
+@app.get("/ui", response_class=HTMLResponse)
+def ui():
+    return """<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Personal AI</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #eee; height: 100vh; display: flex; flex-direction: column; }
+#chat { flex: 1; overflow-y: auto; padding: 16px; }
+.msg { margin: 8px 0; padding: 10px 14px; border-radius: 12px; max-width: 85%; white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; }
+.user { background: #0f3460; margin-left: auto; }
+.assistant { background: #16213e; }
+#input-area { display: flex; padding: 12px; gap: 8px; background: #0f0f1a; }
+#msg { flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #333; background: #1a1a2e; color: #eee; font-size: 16px; }
+#send { padding: 12px 20px; border-radius: 8px; border: none; background: #e94560; color: #fff; font-size: 16px; cursor: pointer; }
+#send:disabled { opacity: 0.5; }
+.typing { opacity: 0.6; font-style: italic; }
+</style>
+</head><body>
+<div id="chat"></div>
+<div id="input-area">
+  <input id="msg" type="text" placeholder="Ask me anything..." autocomplete="off">
+  <button id="send" onclick="send()">Send</button>
+</div>
+<script>
+const KEY = localStorage.getItem('api_key') || prompt('Enter your API key:');
+if (KEY) localStorage.setItem('api_key', KEY);
+let SESSION = localStorage.getItem('session_id');
+if (!SESSION) { SESSION = 'ui-' + Math.random().toString(36).slice(2, 10); localStorage.setItem('session_id', SESSION); }
+const chat = document.getElementById('chat');
+const input = document.getElementById('msg');
+const btn = document.getElementById('send');
+
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && !btn.disabled) send(); });
+
+async function send() {
+  const text = input.value.trim();
+  if (!text) return;
+  addMsg(text, 'user');
+  input.value = '';
+  btn.disabled = true;
+  const typing = addMsg('Thinking...', 'assistant typing');
+  try {
+    const res = await fetch('/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + KEY },
+      body: JSON.stringify({ message: text, session_id: SESSION })
+    });
+    const data = await res.json();
+    typing.remove();
+    if (res.ok) {
+      let reply = data.response;
+      if (data.tools_used && data.tools_used.length) reply += '\\n\\n[tools: ' + data.tools_used.join(', ') + ']';
+      addMsg(reply, 'assistant');
+    } else {
+      addMsg('Error: ' + (data.detail || res.status), 'assistant');
+    }
+  } catch(e) {
+    typing.remove();
+    addMsg('Error: ' + e.message, 'assistant');
+  }
+  btn.disabled = false;
+  input.focus();
+}
+
+function addMsg(text, cls) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + cls;
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+</script>
+</body></html>"""
+
+
 @app.post("/chat")
 async def chat(request: Request, authorization: str = Header(None)):
     verify_key(authorization)
@@ -168,12 +247,23 @@ async def agent(request: Request, authorization: str = Header(None)):
     verify_key(authorization)
     body = await request.json()
     message = body.get("message", "")
+    session_id = body.get("session_id", "default")
 
+    # Save user message and embed for long-term memory
+    msg_id = save_message(session_id, "user", message)
+    remember(message, session_id, "user", msg_id)
+
+    # Get conversation history (short-term) and semantic recall (long-term)
+    history = get_history(session_id)
     memories = recall(message)
-    context = ""
-    if memories:
-        context = "Relevant memories:\n" + "\n".join(f"- {m}" for m in memories)
+    memory_context = "\n".join(f"- {m}" for m in memories) if memories else ""
 
     from tools.orchestrator import orchestrate
-    result = await orchestrate(message, system_context=context)
-    return result
+    result = await orchestrate(history, memory_context=memory_context)
+
+    # Save assistant response
+    assistant_msg = result["response"]
+    aid = save_message(session_id, "assistant", assistant_msg)
+    remember(assistant_msg, session_id, "assistant", aid)
+
+    return {**result, "session_id": session_id}
