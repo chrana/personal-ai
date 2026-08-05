@@ -13,7 +13,7 @@ TOOLS: dict[str, Tool] = {
 TOOL_DEFINITIONS = [
     {
         "name": "download_utility_bill",
-        "description": "Download a utility bill PDF from a provider website using browser automation",
+        "description": "Download a utility bill PDF from a provider website. Checks S3 cache first, only uses browser if not cached. Properties: 42-windmill-brampton, 49-bellcrest-brampton, 43-blair-athol-toronto, 673-rosselini-mississauga. Providers: enbridge.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -21,16 +21,16 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Utility provider key (e.g. 'enbridge')",
                 },
-                "account": {
+                "property": {
                     "type": "string",
-                    "description": "Account number or username for the provider",
+                    "description": "Property slug or address keyword (e.g. '42-windmill-brampton', 'windmill', 'bellcrest', 'blair', 'rosselini')",
                 },
                 "bill_month": {
                     "type": "string",
                     "description": "Bill month in YYYY-MM format",
                 },
             },
-            "required": ["provider", "account", "bill_month"],
+            "required": ["provider", "property", "bill_month"],
         },
     },
 ]

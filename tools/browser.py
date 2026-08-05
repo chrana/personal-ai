@@ -8,6 +8,31 @@ from tools.storage import bill_exists, download_bill, upload_bill
 STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage")
 
 
+def get_config():
+    return get_secret("personal-ai/config")
+
+
+def resolve_property(property_name: str) -> str:
+    """Resolve a property name/address to its slug."""
+    config = get_config()
+    properties = config["properties"]
+
+    # Direct slug match
+    if property_name in properties:
+        return property_name
+
+    # Fuzzy match on address or slug keywords
+    name_lower = property_name.lower()
+    for slug, info in properties.items():
+        if name_lower in slug or name_lower in info["address"].lower():
+            return slug
+        for word in name_lower.split():
+            if word in slug:
+                return slug
+
+    return ""
+
+
 class BrowserTool(Tool):
     name = "browser"
     description = "Automates browser interactions to download files from websites"
@@ -21,7 +46,7 @@ class BrowserTool(Tool):
             return ToolResult(success=False, error=f"Unknown action: {action}")
         return await actions[action](**kwargs)
 
-    async def _download_utility_bill(self, provider: str, account: str, bill_month: str) -> ToolResult:
+    async def _download_utility_bill(self, provider: str, property: str, bill_month: str) -> ToolResult:
         providers = {
             "enbridge": self._enbridge,
         }
@@ -30,33 +55,47 @@ class BrowserTool(Tool):
                 success=False,
                 error=f"Unknown provider: {provider}. Available: {list(providers.keys())}",
             )
-        return await providers[provider](account, bill_month)
 
-    async def _enbridge(self, account: str, bill_month: str) -> ToolResult:
+        property_slug = resolve_property(property)
+        if not property_slug:
+            config = get_config()
+            return ToolResult(
+                success=False,
+                error=f"Unknown property: {property}. Available: {list(config['properties'].keys())}",
+            )
+
+        return await providers[provider](property_slug, bill_month)
+
+    async def _enbridge(self, property_slug: str, bill_month: str) -> ToolResult:
         # Check S3 first
-        if bill_exists("enbridge", account, bill_month):
-            local_path = download_bill("enbridge", account, bill_month)
+        if bill_exists(property_slug, "enbridge", bill_month):
+            local_path = download_bill(property_slug, "enbridge", bill_month)
             return ToolResult(
                 success=True,
                 data={
                     "provider": "enbridge",
-                    "account": account,
+                    "property": property_slug,
                     "bill_month": bill_month,
                     "filepath": local_path,
                     "source": "cache",
                 },
             )
 
+        # Get property config
+        config = get_config()
+        prop_config = config["properties"][property_slug]
+        creds_path = prop_config["utilities"]["enbridge"]["credentials"]
+        creds = get_secret(creds_path)
+
+        username = creds["username"]
+        password = creds["password"]
+        totp = pyotp.TOTP(creds["totp_secret"])
+
         os.makedirs(STORAGE_DIR, exist_ok=True)
-        filename = f"enbridge_{account}_{bill_month}.pdf"
+        filename = f"{property_slug}_enbridge_{bill_month}.pdf"
         filepath = os.path.join(STORAGE_DIR, filename)
 
         try:
-            creds = get_secret("personal-ai/enbridge")
-            username = creds["username"]
-            password = creds["password"]
-            totp = pyotp.TOTP(creds["totp_secret"])
-
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context()
@@ -72,7 +111,6 @@ class BrowserTool(Tool):
 
                 # MFA page
                 await page.wait_for_timeout(5000)
-                await page.screenshot(path="/tmp/enbridge_mfa.png")
 
                 mfa_code = totp.now()
                 mfa_input = page.locator('input[name="answer"], input[name="credentials.passcode"], input[type="tel"]').first
@@ -93,8 +131,6 @@ class BrowserTool(Tool):
                         await page.wait_for_timeout(1000)
                         break
 
-                await page.screenshot(path="/tmp/enbridge_post_login.png")
-
                 # Click "View My Bill" — may open new tab or navigate
                 view_bill = page.locator('a:has-text("View My Bill"), button:has-text("View My Bill")').first
                 await view_bill.wait_for(timeout=10000)
@@ -113,7 +149,6 @@ class BrowserTool(Tool):
                         new_page = await new_page_info.value
                         await new_page.wait_for_load_state("load", timeout=15000)
                         await new_page.wait_for_timeout(3000)
-                        await new_page.screenshot(path="/tmp/enbridge_bill_page.png")
 
                         url = new_page.url
                         if ".pdf" in url:
@@ -124,9 +159,8 @@ class BrowserTool(Tool):
                             await new_page.pdf(path=filepath)
                         await new_page.close()
                     except:
-                        # Neither download nor new tab — it navigated in same page
+                        # Neither download nor new tab — navigated in same page
                         await page.wait_for_timeout(5000)
-                        await page.screenshot(path="/tmp/enbridge_bill_page.png")
                         url = page.url
                         if ".pdf" in url:
                             response = await page.request.get(url)
@@ -138,13 +172,13 @@ class BrowserTool(Tool):
                 await browser.close()
 
             # Upload to S3 for future requests
-            upload_bill(filepath, "enbridge", account, bill_month)
+            upload_bill(filepath, property_slug, "enbridge", bill_month)
 
             return ToolResult(
                 success=True,
                 data={
                     "provider": "enbridge",
-                    "account": account,
+                    "property": property_slug,
                     "bill_month": bill_month,
                     "filepath": filepath,
                     "source": "downloaded",

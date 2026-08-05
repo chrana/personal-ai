@@ -9,27 +9,27 @@ LOCAL_STORAGE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storag
 s3 = boto3.client("s3", region_name="us-east-1")
 
 
-def s3_key(provider: str, account: str, bill_month: str) -> str:
-    return f"bills/{provider}/{account}/{bill_month}.pdf"
+def s3_key(property_slug: str, provider: str, bill_month: str) -> str:
+    return f"bills/{property_slug}/{provider}/{bill_month}.pdf"
 
 
-def bill_exists(provider: str, account: str, bill_month: str) -> bool:
+def bill_exists(property_slug: str, provider: str, bill_month: str) -> bool:
     try:
-        s3.head_object(Bucket=BUCKET, Key=s3_key(provider, account, bill_month))
+        s3.head_object(Bucket=BUCKET, Key=s3_key(property_slug, provider, bill_month))
         return True
     except ClientError:
         return False
 
 
-def download_bill(provider: str, account: str, bill_month: str) -> str:
+def download_bill(property_slug: str, provider: str, bill_month: str) -> str:
     os.makedirs(LOCAL_STORAGE, exist_ok=True)
-    local_path = os.path.join(LOCAL_STORAGE, f"{provider}_{account}_{bill_month}.pdf")
-    s3.download_file(BUCKET, s3_key(provider, account, bill_month), local_path)
+    local_path = os.path.join(LOCAL_STORAGE, f"{property_slug}_{provider}_{bill_month}.pdf")
+    s3.download_file(BUCKET, s3_key(property_slug, provider, bill_month), local_path)
     return local_path
 
 
-def upload_bill(local_path: str, provider: str, account: str, bill_month: str):
-    s3.upload_file(local_path, BUCKET, s3_key(provider, account, bill_month))
+def upload_bill(local_path: str, property_slug: str, provider: str, bill_month: str):
+    s3.upload_file(local_path, BUCKET, s3_key(property_slug, provider, bill_month))
 
 
 class StorageTool(Tool):
@@ -46,12 +46,12 @@ class StorageTool(Tool):
             return ToolResult(success=False, error=f"Unknown action: {action}")
         return await actions[action](**kwargs)
 
-    async def _check_bill(self, provider: str, account: str, bill_month: str) -> ToolResult:
-        exists = bill_exists(provider, account, bill_month)
+    async def _check_bill(self, property_slug: str, provider: str, bill_month: str) -> ToolResult:
+        exists = bill_exists(property_slug, provider, bill_month)
         return ToolResult(success=True, data={"exists": exists})
 
-    async def _get_bill(self, provider: str, account: str, bill_month: str) -> ToolResult:
-        if not bill_exists(provider, account, bill_month):
+    async def _get_bill(self, property_slug: str, provider: str, bill_month: str) -> ToolResult:
+        if not bill_exists(property_slug, provider, bill_month):
             return ToolResult(success=False, error="Bill not found in storage")
-        local_path = download_bill(provider, account, bill_month)
+        local_path = download_bill(property_slug, provider, bill_month)
         return ToolResult(success=True, data={"filepath": local_path})
