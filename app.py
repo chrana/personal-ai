@@ -1,10 +1,13 @@
+import os
 import json
 import sqlite3
 import boto3
 import chromadb
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException
 
 app = FastAPI()
+
+API_KEY = os.environ.get("API_KEY", "")
 
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
@@ -84,13 +87,23 @@ def save_message(session_id: str, role: str, content: str) -> int:
     return msg_id
 
 
+def verify_key(authorization: str = Header(None)):
+    if not API_KEY:
+        return
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing API key")
+    if authorization[7:] != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
 @app.get("/")
 def hello():
     return {"status": "alive"}
 
 
 @app.post("/chat")
-async def chat(request: Request):
+async def chat(request: Request, authorization: str = Header(None)):
+    verify_key(authorization)
     body = await request.json()
     message = body.get("message", "")
     session_id = body.get("session_id", "default")
@@ -129,12 +142,14 @@ async def chat(request: Request):
 
 
 @app.get("/history/{session_id}")
-def history(session_id: str):
+def history(session_id: str, authorization: str = Header(None)):
+    verify_key(authorization)
     return {"messages": get_history(session_id)}
 
 
 @app.delete("/history/{session_id}")
-def clear_history(session_id: str):
+def clear_history(session_id: str, authorization: str = Header(None)):
+    verify_key(authorization)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
     conn.commit()
@@ -143,5 +158,6 @@ def clear_history(session_id: str):
 
 
 @app.get("/recall")
-def recall_endpoint(q: str, n: int = 10):
+def recall_endpoint(q: str, n: int = 10, authorization: str = Header(None)):
+    verify_key(authorization)
     return {"memories": recall(q, n)}
