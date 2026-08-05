@@ -161,3 +161,19 @@ def clear_history(session_id: str, authorization: str = Header(None)):
 def recall_endpoint(q: str, n: int = 10, authorization: str = Header(None)):
     verify_key(authorization)
     return {"memories": recall(q, n)}
+
+
+@app.post("/agent")
+async def agent(request: Request, authorization: str = Header(None)):
+    verify_key(authorization)
+    body = await request.json()
+    message = body.get("message", "")
+
+    memories = recall(message)
+    context = ""
+    if memories:
+        context = "Relevant memories:\n" + "\n".join(f"- {m}" for m in memories)
+
+    from tools.orchestrator import orchestrate
+    result = await orchestrate(message, system_context=context)
+    return result
