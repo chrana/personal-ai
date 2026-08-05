@@ -1,8 +1,12 @@
 import json
+import base64
+import io
 import boto3
+from pdf2image import convert_from_path
 from tools.base import Tool, ToolResult
 from tools.browser import BrowserTool
 from tools.secrets import get_secret
+from tools.storage import bill_exists, download_bill
 
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 MODEL = "us.anthropic.claude-sonnet-4-6"
@@ -34,7 +38,68 @@ TOOL_DEFINITIONS = [
             "required": ["provider", "property", "bill_month"],
         },
     },
+    {
+        "name": "read_bill",
+        "description": "Read and extract text/data from a previously downloaded utility bill PDF. Use this to answer questions about bill amounts, usage, charges, due dates, etc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Utility provider key (e.g. 'enbridge')",
+                },
+                "property": {
+                    "type": "string",
+                    "description": "Property name (e.g. 'windmill', 'bellcrest', 'blair-athol', 'rosselini')",
+                },
+                "bill_month": {
+                    "type": "string",
+                    "description": "Bill month in YYYY-MM format",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "What to extract or analyze from the bill",
+                },
+            },
+            "required": ["provider", "property", "bill_month"],
+        },
+    },
 ]
+
+
+def read_bill_pdf(property_slug: str, provider: str, bill_month: str, question: str = "") -> ToolResult:
+    if not bill_exists(property_slug, provider, bill_month):
+        return ToolResult(success=False, error=f"Bill not found. Download it first.")
+
+    local_path = download_bill(property_slug, provider, bill_month)
+
+    images = convert_from_path(local_path, dpi=150)
+    image_contents = []
+    for img in images[:2]:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        image_contents.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": b64},
+        })
+
+    prompt = question or "Extract all key information from this utility bill: account number, billing period, total amount, usage, charges breakdown, due date, and any other relevant details. Return as structured text."
+
+    response = bedrock.invoke_model(
+        modelId=MODEL,
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": image_contents + [{"type": "text", "text": prompt}]}],
+        }),
+    )
+
+    result = json.loads(response["body"].read())
+    extracted = result["content"][0]["text"]
+    return ToolResult(success=True, data={"content": extracted, "property": property_slug, "provider": provider, "bill_month": bill_month})
 
 
 def get_property_context() -> str:
@@ -56,7 +121,7 @@ SYSTEM_PROMPT = """You are a personal AI assistant for a property owner who mana
 
 When the user asks about "my bill" or a utility without specifying a property, ask which property they mean OR use context from the conversation to infer it. If they've been talking about a specific property, use that one.
 
-When the user asks about bill contents, amounts, usage — and you've already downloaded the bill in this conversation — refer to the tool result data. If you haven't downloaded it yet, offer to do so.
+When the user asks about bill contents, amounts, usage, or wants a summary — use the read_bill tool to extract the data from the PDF. You don't need to download first if the bill is already cached; read_bill checks S3 directly.
 
 Be concise and helpful. Don't ask for information you already know from context."""
 
@@ -64,6 +129,13 @@ Be concise and helpful. Don't ask for information you already know from context.
 async def run_tool_call(name: str, input_data: dict) -> ToolResult:
     if name == "download_utility_bill":
         return await TOOLS["browser"].run(action="download_utility_bill", **input_data)
+    if name == "read_bill":
+        question = input_data.pop("question", "")
+        from tools.browser import resolve_property
+        property_slug = resolve_property(input_data["property"])
+        if not property_slug:
+            return ToolResult(success=False, error=f"Unknown property: {input_data['property']}")
+        return read_bill_pdf(property_slug, input_data["provider"], input_data["bill_month"], question)
     return ToolResult(success=False, error=f"Unknown tool: {name}")
 
 
