@@ -19,7 +19,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Utility provider key (e.g. 'example_electric')",
+                    "description": "Utility provider key (e.g. 'enbridge')",
                 },
                 "account": {
                     "type": "string",

@@ -1,7 +1,8 @@
 import os
-from datetime import datetime
+import pyotp
 from playwright.async_api import async_playwright
 from tools.base import Tool, ToolResult
+from tools.secrets import get_secret
 
 STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage")
 
@@ -21,7 +22,7 @@ class BrowserTool(Tool):
 
     async def _download_utility_bill(self, provider: str, account: str, bill_month: str) -> ToolResult:
         providers = {
-            "example_electric": self._example_electric,
+            "enbridge": self._enbridge,
         }
         if provider not in providers:
             return ToolResult(
@@ -30,35 +31,101 @@ class BrowserTool(Tool):
             )
         return await providers[provider](account, bill_month)
 
-    async def _example_electric(self, account: str, bill_month: str) -> ToolResult:
-        """Template for a utility provider scraper. Replace with real provider logic."""
+    async def _enbridge(self, account: str, bill_month: str) -> ToolResult:
         os.makedirs(STORAGE_DIR, exist_ok=True)
-        filename = f"electric_{account}_{bill_month}.pdf"
+        filename = f"enbridge_{account}_{bill_month}.pdf"
         filepath = os.path.join(STORAGE_DIR, filename)
 
         try:
+            creds = get_secret("personal-ai/enbridge")
+            username = creds["username"]
+            password = creds["password"]
+            totp = pyotp.TOTP(creds["totp_secret"])
+
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context()
                 page = await context.new_page()
 
-                # Template: replace with actual provider login + navigation
-                # await page.goto("https://provider.com/login")
-                # await page.fill("#username", account)
-                # await page.fill("#password", os.environ.get("ELECTRIC_PASSWORD", ""))
-                # await page.click("#login-button")
-                # await page.wait_for_url("**/dashboard")
-                # await page.goto(f"https://provider.com/bills/{bill_month}")
-                # download = await page.wait_for_event("download")
-                # await download.save_as(filepath)
+                # Login page
+                await page.goto("https://myaccount.enbridgegas.com/sign-in")
+                await page.wait_for_selector("#okta-signin-username", timeout=15000)
+
+                await page.fill("#okta-signin-username", username)
+                await page.fill("#okta-signin-password", password)
+                await page.click("#okta-signin-submit")
+
+                # MFA page
+                await page.wait_for_timeout(5000)
+                await page.screenshot(path="/tmp/enbridge_mfa.png")
+
+                mfa_code = totp.now()
+                mfa_input = page.locator('input[name="answer"], input[name="credentials.passcode"], input[type="tel"]').first
+                await mfa_input.wait_for(timeout=10000)
+                await mfa_input.fill(mfa_code)
+
+                submit = page.locator('input[type="submit"], button[type="submit"]').first
+                await submit.click()
+
+                # Wait for dashboard
+                await page.wait_for_timeout(8000)
+
+                # Dismiss any popup modals
+                for dismiss_text in ["Don't show again.", "Ok", "X"]:
+                    btn = page.locator(f'button:has-text("{dismiss_text}"), a:has-text("{dismiss_text}")').first
+                    if await btn.is_visible():
+                        await btn.click()
+                        await page.wait_for_timeout(1000)
+                        break
+
+                await page.screenshot(path="/tmp/enbridge_post_login.png")
+
+                # Click "View My Bill" — may open new tab or navigate
+                view_bill = page.locator('a:has-text("View My Bill"), button:has-text("View My Bill")').first
+                await view_bill.wait_for(timeout=10000)
+
+                # Try download first, fall back to new page/PDF capture
+                try:
+                    async with page.expect_download(timeout=10000) as download_info:
+                        await view_bill.click()
+                    download = await download_info.value
+                    await download.save_as(filepath)
+                except:
+                    # Might open in new tab
+                    try:
+                        async with context.expect_page(timeout=10000) as new_page_info:
+                            await view_bill.click()
+                        new_page = await new_page_info.value
+                        await new_page.wait_for_load_state("load", timeout=15000)
+                        await new_page.wait_for_timeout(3000)
+                        await new_page.screenshot(path="/tmp/enbridge_bill_page.png")
+
+                        url = new_page.url
+                        if ".pdf" in url:
+                            response = await new_page.request.get(url)
+                            with open(filepath, "wb") as f:
+                                f.write(await response.body())
+                        else:
+                            await new_page.pdf(path=filepath)
+                        await new_page.close()
+                    except:
+                        # Neither download nor new tab — it navigated in same page
+                        await page.wait_for_timeout(5000)
+                        await page.screenshot(path="/tmp/enbridge_bill_page.png")
+                        url = page.url
+                        if ".pdf" in url:
+                            response = await page.request.get(url)
+                            with open(filepath, "wb") as f:
+                                f.write(await response.body())
+                        else:
+                            await page.pdf(path=filepath)
 
                 await browser.close()
 
             return ToolResult(
                 success=True,
                 data={
-                    "message": "Provider template - implement actual scraping logic",
-                    "provider": "example_electric",
+                    "provider": "enbridge",
                     "account": account,
                     "bill_month": bill_month,
                     "filepath": filepath,
