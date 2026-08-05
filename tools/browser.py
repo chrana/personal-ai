@@ -3,6 +3,7 @@ import pyotp
 from playwright.async_api import async_playwright
 from tools.base import Tool, ToolResult
 from tools.secrets import get_secret
+from tools.storage import bill_exists, download_bill, upload_bill
 
 STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage")
 
@@ -32,6 +33,20 @@ class BrowserTool(Tool):
         return await providers[provider](account, bill_month)
 
     async def _enbridge(self, account: str, bill_month: str) -> ToolResult:
+        # Check S3 first
+        if bill_exists("enbridge", account, bill_month):
+            local_path = download_bill("enbridge", account, bill_month)
+            return ToolResult(
+                success=True,
+                data={
+                    "provider": "enbridge",
+                    "account": account,
+                    "bill_month": bill_month,
+                    "filepath": local_path,
+                    "source": "cache",
+                },
+            )
+
         os.makedirs(STORAGE_DIR, exist_ok=True)
         filename = f"enbridge_{account}_{bill_month}.pdf"
         filepath = os.path.join(STORAGE_DIR, filename)
@@ -122,6 +137,9 @@ class BrowserTool(Tool):
 
                 await browser.close()
 
+            # Upload to S3 for future requests
+            upload_bill(filepath, "enbridge", account, bill_month)
+
             return ToolResult(
                 success=True,
                 data={
@@ -129,6 +147,7 @@ class BrowserTool(Tool):
                     "account": account,
                     "bill_month": bill_month,
                     "filepath": filepath,
+                    "source": "downloaded",
                 },
             )
         except Exception as e:
