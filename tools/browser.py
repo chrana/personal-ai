@@ -58,7 +58,17 @@ class BrowserTool(Tool):
                 error=f"Unknown property: {property}. Available: {list(PROPERTIES.keys())}",
             )
 
-        return await providers[provider](property_slug, bill_month)
+        result = await providers[provider](property_slug, bill_month)
+
+        # Extract and save metadata after successful download
+        if result.success and result.data.get("source") == "downloaded":
+            try:
+                from tools.extract import extract_and_save_metadata
+                extract_and_save_metadata(property_slug, provider, bill_month)
+            except Exception:
+                pass
+
+        return result
 
     def _get_creds(self, property_slug: str, provider: str) -> dict:
         secret_name = PROPERTIES[property_slug]["credentials_secret"]

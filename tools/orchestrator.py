@@ -42,16 +42,16 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "split_all_bills",
-        "description": "Calculate landlord/tenant cost split for ALL utility bills in a given month across all properties. Returns a full breakdown with totals.",
+        "description": "Calculate landlord/tenant cost split for ALL utility bills for a given usage month across all properties. Attribution is by usage period (when the utility was consumed), not when the bill was issued or due. Returns a full breakdown with totals.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "bill_month": {
+                "usage_month": {
                     "type": "string",
-                    "description": "Bill month in YYYY-MM format",
+                    "description": "Usage month in YYYY-MM format (the month utilities were consumed, not billed)",
                 },
             },
-            "required": ["bill_month"],
+            "required": ["usage_month"],
         },
     },
     {
@@ -204,8 +204,8 @@ async def run_tool_call(name: str, input_data: dict) -> ToolResult:
         else:
             result = split_bill(property_slug, input_data["provider"], input_data["bill_month"])
     elif name == "split_all_bills":
-        from tools.billing import split_all_bills
-        result = split_all_bills(input_data["bill_month"])
+        from tools.billing import split_by_usage_month
+        result = split_by_usage_month(input_data.get("usage_month", input_data.get("bill_month", "")))
     elif name == "list_bills":
         from tools.browser import resolve_property
         prop = input_data.get("property", "")

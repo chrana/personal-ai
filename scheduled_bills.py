@@ -138,48 +138,73 @@ async def main():
 
 
 async def send_monthly_summary():
-    """Generate and send monthly bill summary with tenant splits."""
-    from tools.billing import split_all_bills
+    """Generate and send monthly bill summary based on usage month, with PDF attachments."""
+    from tools.billing import split_by_usage_month
     from tools.notify import send_bill_summary
+    from tools.storage import download_bill
 
+    # Summary is for LAST month's usage (sent on 1st of current month)
     now = datetime.now()
-    bill_month = now.strftime("%Y-%m")
-    result = split_all_bills(bill_month)
+    year, month = now.year, now.month - 1
+    if month == 0:
+        month = 12
+        year -= 1
+    usage_month = f"{year:04d}-{month:02d}"
+
+    result = split_by_usage_month(usage_month)
 
     if not result.success or not result.data["bills"]:
-        print("  No bills to summarize")
+        print(f"  No bills for usage month {usage_month}")
         return
 
     data = result.data
-    lines = [f"Utility Bill Summary — {bill_month}", ""]
+    lines = [f"Utility Bill Summary — {usage_month} usage", ""]
 
+    attachments = []
     for prop in ["windmill", "bellcrest"]:
         prop_bills = [b for b in data["bills"] if b["property"] == prop]
         if not prop_bills:
             continue
         split_pct = prop_bills[0]["tenant_pct"]
-        lines.append(f"{'=' * 30}")
+        lines.append(f"{'=' * 35}")
         lines.append(f"{prop.upper()} (tenant pays {split_pct}%)")
-        lines.append(f"{'=' * 30}")
+        lines.append(f"{'=' * 35}")
         prop_total = 0
         tenant_total = 0
         for b in prop_bills:
-            lines.append(f"  {b['provider']:12} ${b['total']:>8.2f}  → tenant: ${b['tenant_amount']:.2f}")
+            period = ""
+            if b.get("billing_period_start") and b.get("billing_period_end"):
+                period = f" ({b['billing_period_start']} to {b['billing_period_end']})"
+            due = f" due {b['due_date']}" if b.get("due_date") else ""
+            lines.append(f"  {b['provider']:12} ${b['total']:>8.2f}  -> tenant: ${b['tenant_amount']:.2f}{due}")
+            if period:
+                lines.append(f"  {'':12} {period}")
             prop_total += b["total"]
             tenant_total += b["tenant_amount"]
-        lines.append(f"  {'TOTAL':12} ${prop_total:>8.2f}  → tenant: ${tenant_total:.2f}")
+
+            # Collect PDF for attachment
+            if b.get("s3_key"):
+                bill_month_key = b["s3_key"].split("/")[-1].replace(".pdf", "")
+                try:
+                    local = download_bill(prop, b["provider"], bill_month_key)
+                    attachments.append({"filename": f"{prop}_{b['provider']}_{usage_month}.pdf", "path": local})
+                except Exception:
+                    pass
+
+        lines.append(f"  {'TOTAL':12} ${prop_total:>8.2f}  -> tenant: ${tenant_total:.2f}")
         lines.append("")
 
-    lines.append(f"{'=' * 30}")
+    lines.append(f"{'=' * 35}")
     lines.append(f"YOUR TOTAL (landlord): ${data['landlord_total']:.2f}")
     for prop, amount in data["tenant_totals"].items():
         lines.append(f"  {prop} tenant owes: ${amount:.2f}")
 
     body = "\n".join(lines)
-    subject = f"Bills Summary — {bill_month}"
+    subject = f"Bills Summary — {usage_month} usage"
 
     print(f"  Sending summary:\n{body}")
-    send_bill_summary(subject, body)
+    print(f"  Attachments: {[a['filename'] for a in attachments]}")
+    send_bill_summary(subject, body, attachments=attachments)
     print("  Sent!")
 
 

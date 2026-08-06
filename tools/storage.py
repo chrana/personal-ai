@@ -32,6 +32,52 @@ def upload_bill(local_path: str, property_slug: str, provider: str, bill_month: 
     s3.upload_file(local_path, BUCKET, s3_key(property_slug, provider, bill_month))
 
 
+def metadata_key(property_slug: str, provider: str, bill_month: str) -> str:
+    return f"bills/{property_slug}/{provider}/{bill_month}.json"
+
+
+def save_bill_metadata(property_slug: str, provider: str, bill_month: str, metadata: dict):
+    import json
+    key = metadata_key(property_slug, provider, bill_month)
+    s3.put_object(Bucket=BUCKET, Key=key, Body=json.dumps(metadata), ContentType="application/json")
+
+
+def get_bill_metadata(property_slug: str, provider: str, bill_month: str) -> dict:
+    import json
+    key = metadata_key(property_slug, provider, bill_month)
+    try:
+        resp = s3.get_object(Bucket=BUCKET, Key=key)
+        return json.loads(resp["Body"].read())
+    except ClientError:
+        return {}
+
+
+def list_all_metadata() -> list:
+    import json
+    results = []
+    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix="bills/")
+    for obj in resp.get("Contents", []):
+        if obj["Key"].endswith(".json"):
+            try:
+                data = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
+                meta = json.loads(data["Body"].read())
+                results.append(meta)
+            except Exception:
+                pass
+    return results
+
+
+def get_bills_for_usage_month(usage_month: str) -> list:
+    all_meta = list_all_metadata()
+    results = []
+    for meta in all_meta:
+        if not meta.get("usage_month"):
+            continue
+        if meta["usage_month"] == usage_month:
+            results.append(meta)
+    return results
+
+
 def list_bills(property_slug: str = "", provider: str = "") -> list:
     prefix = "bills/"
     if property_slug:
