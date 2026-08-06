@@ -1,4 +1,5 @@
 import os
+import re
 import pyotp
 from playwright.async_api import async_playwright
 from tools.base import Tool, ToolResult
@@ -50,6 +51,7 @@ class BrowserTool(Tool):
         providers = {
             "enbridge": self._enbridge,
             "peel-water": self._peel_water,
+            "alectra": self._alectra,
         }
         if provider not in providers:
             return ToolResult(
@@ -265,6 +267,105 @@ class BrowserTool(Tool):
                 success=True,
                 data={
                     "provider": "peel-water",
+                    "property": property_slug,
+                    "bill_month": bill_month,
+                    "filepath": filepath,
+                    "source": "downloaded",
+                },
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    async def _alectra(self, property_slug: str, bill_month: str) -> ToolResult:
+        if bill_exists(property_slug, "alectra", bill_month):
+            local_path = download_bill(property_slug, "alectra", bill_month)
+            return ToolResult(
+                success=True,
+                data={
+                    "provider": "alectra",
+                    "property": property_slug,
+                    "bill_month": bill_month,
+                    "filepath": local_path,
+                    "source": "cache",
+                },
+            )
+
+        config = get_config()
+        prop_config = config["properties"][property_slug]
+        creds_path = prop_config["utilities"]["alectra"]["credentials"]
+        creds = get_secret(creds_path)
+
+        username = creds["username"]
+        password = creds["password"]
+
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+        filename = f"{property_slug}_alectra_{bill_month}.pdf"
+        filepath = os.path.join(STORAGE_DIR, filename)
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+                context = await browser.new_context(
+                    viewport={"width": 1280, "height": 800},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                )
+                page = await context.new_page()
+                await page.add_init_script('() => { Object.defineProperty(navigator, "webdriver", { get: () => undefined }); }')
+
+                await page.goto("https://myalectra.alectrautilities.com/portal/#/login")
+                await page.wait_for_load_state("load", timeout=15000)
+                await page.wait_for_timeout(5000)
+
+                await page.click("#username")
+                await page.keyboard.type(username, delay=80)
+                await page.click("#password")
+                await page.keyboard.type(password, delay=80)
+                await page.wait_for_timeout(1000)
+                await page.click('button:has-text("Log In")')
+                await page.wait_for_timeout(10000)
+
+                await page.click('a[href="#/ViewBill"]')
+                await page.wait_for_timeout(5000)
+
+                pdf_btn = page.locator('button:has-text("View your detailed bill PDF"), a:has-text("View your detailed bill PDF")').first
+                async with context.expect_page(timeout=15000) as new_page_info:
+                    await pdf_btn.click()
+                viewer_page = await new_page_info.value
+                await viewer_page.wait_for_load_state("load", timeout=15000)
+                await viewer_page.wait_for_timeout(5000)
+
+                btn = viewer_page.locator("#main_PDF")
+                onclick = await btn.get_attribute("onclick")
+                match = re.search(r"document\.location\.href='([^']+)'", onclick)
+                if not match:
+                    await browser.close()
+                    return ToolResult(success=False, error="Could not find PDF download URL in viewer")
+
+                pdf_path = match.group(1)
+                base_url = viewer_page.url.rsplit("/", 1)[0]
+                pdf_url = base_url + "/" + pdf_path
+
+                response = await viewer_page.request.get(pdf_url)
+                body = await response.body()
+
+                if body[:4] != b"%PDF":
+                    await browser.close()
+                    return ToolResult(success=False, error="Downloaded content is not a valid PDF")
+
+                with open(filepath, "wb") as f:
+                    f.write(body)
+
+                await browser.close()
+
+            upload_bill(filepath, property_slug, "alectra", bill_month)
+
+            return ToolResult(
+                success=True,
+                data={
+                    "provider": "alectra",
                     "property": property_slug,
                     "bill_month": bill_month,
                     "filepath": filepath,

@@ -79,6 +79,20 @@ async def run_peel_water():
     return results
 
 
+async def run_alectra():
+    """Monthly: download current bill for all properties with alectra."""
+    now = datetime.now()
+    bill_month = now.strftime("%Y-%m")
+
+    results = []
+    for prop in ["windmill", "bellcrest"]:
+        result = await download_bill("alectra", prop, bill_month)
+        results.append(result)
+        print(f"  {prop}/alectra/{bill_month}: {result['status']}")
+
+    return results
+
+
 def report_cron_metric(provider: str, results: list):
     """Push cron run metrics to CloudWatch."""
     from tools.monitoring import _put_metric
@@ -102,6 +116,11 @@ async def main():
         print("Peel Water:")
         results = await run_peel_water()
         report_cron_metric("peel-water", results)
+
+    if provider in ("alectra", "all"):
+        print("Alectra:")
+        results = await run_alectra()
+        report_cron_metric("alectra", results)
 
     print("Done.")
 

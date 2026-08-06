@@ -26,7 +26,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water')",
+                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra')",
                 },
                 "property": {
                     "type": "string",
@@ -48,7 +48,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water')",
+                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra')",
                 },
                 "property": {
                     "type": "string",
