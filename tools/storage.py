@@ -32,6 +32,26 @@ def upload_bill(local_path: str, property_slug: str, provider: str, bill_month: 
     s3.upload_file(local_path, BUCKET, s3_key(property_slug, provider, bill_month))
 
 
+def list_bills(property_slug: str = "", provider: str = "") -> list:
+    prefix = "bills/"
+    if property_slug:
+        prefix += f"{property_slug}/"
+        if provider:
+            prefix += f"{provider}/"
+
+    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+    bills = []
+    for obj in resp.get("Contents", []):
+        parts = obj["Key"].replace("bills/", "").replace(".pdf", "").split("/")
+        if len(parts) == 3:
+            bills.append({
+                "property": parts[0],
+                "provider": parts[1],
+                "bill_month": parts[2],
+            })
+    return bills
+
+
 class StorageTool(Tool):
     name = "storage"
     description = "Manages bill storage in S3"

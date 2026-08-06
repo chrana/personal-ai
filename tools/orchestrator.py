@@ -7,7 +7,7 @@ from pdf2image import convert_from_path
 from tools.base import Tool, ToolResult
 from tools.browser import BrowserTool
 from tools.secrets import get_secret
-from tools.storage import bill_exists, download_bill
+from tools.storage import bill_exists, download_bill, list_bills
 from tools.monitoring import log_tool_call, log_bedrock_call
 
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
@@ -102,6 +102,24 @@ TOOL_DEFINITIONS = [
             "required": ["provider", "property", "bill_month"],
         },
     },
+    {
+        "name": "list_bills",
+        "description": "List all available bills stored in the system. Can filter by property and/or provider. Use this to find what bills are available before answering questions about totals, trends, or comparisons.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "property": {
+                    "type": "string",
+                    "description": "Optional: filter by property (e.g. 'windmill', 'bellcrest')",
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "Optional: filter by provider (e.g. 'enbridge', 'alectra', 'peel-water')",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -153,15 +171,21 @@ def get_property_context() -> str:
         return ""
 
 
-SYSTEM_PROMPT = """You are a personal AI assistant for a property owner who manages multiple rental properties. You have tool access for downloading utility bills and other tasks.
+SYSTEM_PROMPT = """You are a personal AI assistant for a property owner who manages multiple rental properties. You have tool access for downloading utility bills, reading them, calculating cost splits, and answering questions.
 
 {property_context}
 
-When the user asks about "my bill" or a utility without specifying a property, ask which property they mean OR use context from the conversation to infer it. If they've been talking about a specific property, use that one.
+Cost split: Windmill 30% landlord / 70% tenant. Bellcrest 66% landlord / 34% tenant.
 
-When the user asks about bill contents, amounts, usage, or wants a summary — use the read_bill tool to extract the data from the PDF. You don't need to download first if the bill is already cached; read_bill checks S3 directly.
+Today's date: {today}
 
-Be concise and helpful. Don't ask for information you already know from context."""
+Guidelines:
+- When the user asks about "my bill" or a utility without specifying a property, ask which property they mean OR use context from the conversation to infer it.
+- For bill contents, amounts, usage, or summaries — use read_bill. You don't need to download first if it's cached.
+- For aggregate questions ("total spend this quarter", "which property costs more", "compare months") — use list_bills to find available bills, then read_bill on each relevant one.
+- For split/tenant questions — use split_bill or split_all_bills.
+- When the user says "this month" or "last month", calculate from today's date.
+- Be concise. Present numbers in a clear format. Don't ask for info you already know."""
 
 
 async def run_tool_call(name: str, input_data: dict) -> ToolResult:
@@ -187,6 +211,12 @@ async def run_tool_call(name: str, input_data: dict) -> ToolResult:
     elif name == "split_all_bills":
         from tools.billing import split_all_bills
         result = split_all_bills(input_data["bill_month"])
+    elif name == "list_bills":
+        from tools.browser import resolve_property
+        prop = input_data.get("property", "")
+        property_slug = resolve_property(prop) if prop else ""
+        bills = list_bills(property_slug, input_data.get("provider", ""))
+        result = ToolResult(success=True, data={"bills": bills})
     else:
         result = ToolResult(success=False, error=f"Unknown tool: {name}")
     duration_ms = (time.time() - start) * 1000
@@ -195,8 +225,9 @@ async def run_tool_call(name: str, input_data: dict) -> ToolResult:
 
 
 async def orchestrate(messages: list, memory_context: str = "") -> dict:
+    from datetime import date
     property_context = get_property_context()
-    system = SYSTEM_PROMPT.format(property_context=property_context)
+    system = SYSTEM_PROMPT.format(property_context=property_context, today=date.today().isoformat())
 
     if memory_context:
         system += f"\n\nRelevant memories from past conversations:\n{memory_context}"
