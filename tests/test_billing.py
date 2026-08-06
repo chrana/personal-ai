@@ -13,7 +13,7 @@ class TestGetCostSplit:
 
     def test_bellcrest(self, aws_env):
         split = get_cost_split("bellcrest")
-        assert split == {"landlord_pct": 66, "tenant_pct": 34}
+        assert split == {"landlord_pct": 67, "tenant_pct": 33}
 
     def test_unknown_defaults_to_100(self, aws_env):
         split = get_cost_split("nonexistent")
@@ -67,8 +67,8 @@ class TestSplitBill:
 
         assert result.success
         assert result.data["total"] == 337.14
-        assert result.data["landlord_amount"] == 222.51
-        assert result.data["tenant_amount"] == 114.63
+        assert result.data["landlord_amount"] == 225.88
+        assert result.data["tenant_amount"] == 111.26
 
     def test_no_metadata(self, aws_env):
         result = split_bill("windmill", "alectra", "2099-01")
@@ -122,9 +122,9 @@ class TestSplitByUsageMonth:
 
         assert result.success
         assert len(result.data["bills"]) == 2
-        assert result.data["landlord_total"] == 258.0  # 200*0.30 + 300*0.66
+        assert result.data["landlord_total"] == 261.0  # 200*0.30 + 300*0.67
         assert result.data["tenant_totals"]["windmill"] == 140.0
-        assert result.data["tenant_totals"]["bellcrest"] == 102.0
+        assert result.data["tenant_totals"]["bellcrest"] == 99.0
 
     def test_deduplicates(self, aws_env, tmp_path):
         pdf = tmp_path / "test.pdf"

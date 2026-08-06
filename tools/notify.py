@@ -14,26 +14,20 @@ def build_html_summary(data: dict, usage_month: str) -> str:
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body {{ font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }}
+body {{ font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 16px; background: #f5f5f5; color: #1a1a1a; }}
 .card {{ background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-h1 {{ font-size: 20px; color: #1a1a1a; margin: 0 0 4px; }}
-h2 {{ font-size: 16px; color: #333; margin: 16px 0 8px; }}
-.subtitle {{ color: #666; font-size: 14px; margin-bottom: 16px; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
-th {{ text-align: left; padding: 8px 4px; color: #666; font-weight: 500; border-bottom: 1px solid #eee; }}
-td {{ padding: 8px 4px; border-bottom: 1px solid #f0f0f0; }}
-.amount {{ text-align: right; font-weight: 600; }}
-.tenant {{ text-align: right; color: #e65100; }}
-.period {{ font-size: 12px; color: #999; }}
-.total-row td {{ border-top: 2px solid #333; font-weight: 700; border-bottom: none; }}
-.summary {{ background: #1a237e; color: #fff; border-radius: 12px; padding: 20px; }}
-.summary h2 {{ color: #fff; margin: 0 0 12px; }}
-.summary-item {{ display: flex; justify-content: space-between; padding: 6px 0; font-size: 15px; }}
-.summary-amount {{ font-weight: 700; font-size: 18px; }}
+h1 {{ font-size: 20px; margin: 0 0 4px; }}
+.subtitle {{ color: #666; font-size: 14px; margin-bottom: 20px; }}
+.prop-header {{ font-size: 17px; font-weight: 700; margin: 0 0 4px; }}
+.prop-sub {{ font-size: 13px; color: #666; margin-bottom: 12px; }}
+.bill-line {{ font-size: 15px; padding: 4px 0; }}
+.total-line {{ font-size: 16px; font-weight: 700; padding: 8px 0 0; border-top: 1px solid #eee; margin-top: 8px; }}
+.copy-block {{ background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; margin: 12px 0; font-size: 15px; line-height: 1.8; }}
+.period-note {{ font-size: 12px; color: #999; margin-top: 8px; }}
 </style></head><body>
 <div class="card">
-<h1>Bills Summary</h1>
-<div class="subtitle">{usage_month} usage period</div>
+<h1>Monthly Bills — {usage_month}</h1>
+<div class="subtitle">Copy-paste tenant amounts below</div>
 """
 
     for prop in ["windmill", "bellcrest"]:
@@ -41,30 +35,32 @@ td {{ padding: 8px 4px; border-bottom: 1px solid #f0f0f0; }}
         if not prop_bills:
             continue
         split_pct = prop_bills[0]["tenant_pct"]
-        prop_total = sum(b["total"] for b in prop_bills)
         tenant_total = sum(b["tenant_amount"] for b in prop_bills)
 
-        html += f"""<h2>{prop.title()} <span style="color:#999;font-weight:400;font-size:13px;">tenant pays {split_pct}%</span></h2>
-<table>
-<tr><th>Provider</th><th class="amount">Total</th><th class="tenant">Tenant</th></tr>
-"""
+        html += f'<div class="prop-header">{prop.title()}</div>\n'
+        html += f'<div class="prop-sub">Tenant share: {split_pct}% of each bill</div>\n'
+
+        # Copy-paste block
+        html += '<div class="copy-block">\n'
+        amounts = []
         for b in prop_bills:
-            period = ""
+            provider_name = b["provider"].replace("-", " ").title()
+            html += f'{provider_name} - {b["tenant_amount"]:.2f}<br>\n'
+            amounts.append(f'{b["tenant_amount"]:.2f}')
+
+        formula = "+".join(amounts)
+        html += f'<strong>Total = {formula} = {tenant_total:.2f}</strong>\n'
+        html += '</div>\n'
+
+        # Period details (smaller, FYI)
+        html += '<div class="period-note">\n'
+        for b in prop_bills:
             if b.get("billing_period_start") and b.get("billing_period_end"):
-                period = f'<br><span class="period">{b["billing_period_start"]} to {b["billing_period_end"]}</span>'
-            due = f'<br><span class="period">due {b["due_date"]}</span>' if b.get("due_date") else ""
-            html += f'<tr><td>{b["provider"].title()}{period}</td><td class="amount">${b["total"]:.2f}{due}</td><td class="tenant">${b["tenant_amount"]:.2f}</td></tr>\n'
-
-        html += f'<tr class="total-row"><td>Total</td><td class="amount">${prop_total:.2f}</td><td class="tenant">${tenant_total:.2f}</td></tr>\n</table>\n'
-
-    html += "</div>\n"
-
-    html += f"""<div class="summary">
-<h2>Your Share (Landlord)</h2>
-<div class="summary-item"><span>Total</span><span class="summary-amount">${data['landlord_total']:.2f}</span></div>
-"""
-    for prop, amount in data["tenant_totals"].items():
-        html += f'<div class="summary-item"><span>{prop.title()} tenant owes</span><span class="summary-amount">${amount:.2f}</span></div>\n'
+                html += f'{b["provider"].title()}: {b["billing_period_start"]} to {b["billing_period_end"]}'
+                if b.get("due_date"):
+                    html += f' (due {b["due_date"]})'
+                html += '<br>\n'
+        html += '</div>\n<br>\n'
 
     html += "</div>\n</body></html>"
     return html
