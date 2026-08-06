@@ -19,6 +19,42 @@ TOOLS: dict[str, Tool] = {
 
 TOOL_DEFINITIONS = [
     {
+        "name": "split_bill",
+        "description": "Calculate landlord/tenant cost split for a utility bill. Returns the total amount, each party's percentage, and their dollar amounts.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra')",
+                },
+                "property": {
+                    "type": "string",
+                    "description": "Property name (e.g. 'windmill', 'bellcrest')",
+                },
+                "bill_month": {
+                    "type": "string",
+                    "description": "Bill month in YYYY-MM format",
+                },
+            },
+            "required": ["provider", "property", "bill_month"],
+        },
+    },
+    {
+        "name": "split_all_bills",
+        "description": "Calculate landlord/tenant cost split for ALL utility bills in a given month across all properties. Returns a full breakdown with totals.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bill_month": {
+                    "type": "string",
+                    "description": "Bill month in YYYY-MM format",
+                },
+            },
+            "required": ["bill_month"],
+        },
+    },
+    {
         "name": "download_utility_bill",
         "description": "Download a utility bill PDF from a provider website. Checks S3 cache first, only uses browser if not cached.",
         "input_schema": {
@@ -140,6 +176,17 @@ async def run_tool_call(name: str, input_data: dict) -> ToolResult:
             result = ToolResult(success=False, error=f"Unknown property: {input_data['property']}")
         else:
             result = read_bill_pdf(property_slug, input_data["provider"], input_data["bill_month"], question)
+    elif name == "split_bill":
+        from tools.billing import split_bill
+        from tools.browser import resolve_property
+        property_slug = resolve_property(input_data["property"])
+        if not property_slug:
+            result = ToolResult(success=False, error=f"Unknown property: {input_data['property']}")
+        else:
+            result = split_bill(property_slug, input_data["provider"], input_data["bill_month"])
+    elif name == "split_all_bills":
+        from tools.billing import split_all_bills
+        result = split_all_bills(input_data["bill_month"])
     else:
         result = ToolResult(success=False, error=f"Unknown tool: {name}")
     duration_ms = (time.time() - start) * 1000
