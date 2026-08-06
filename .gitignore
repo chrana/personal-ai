@@ -6,3 +6,4 @@ memory.db
 storage/
 .env
 *.log
+cron.log
