@@ -9,30 +9,6 @@ os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 os.environ["AWS_ACCESS_KEY_ID"] = "testing"
 os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
 
-TEST_CONFIG = {
-    "properties": {
-        "windmill": {
-            "address": "42 Windmill Blvd, Lot 238, Brampton ON L6Y 3E4",
-            "utilities": {
-                "enbridge": {"account": "910059477804"},
-                "peel-water": {},
-                "alectra": {},
-            },
-            "cost_split": {"landlord_pct": 30, "tenant_pct": 70},
-            "credentials": "personal-ai/creds/windmill",
-        },
-        "bellcrest": {
-            "address": "49 Bellcrest Rd, Brampton",
-            "utilities": {
-                "enbridge": {"account": "PLACEHOLDER"},
-                "peel-water": {},
-                "alectra": {},
-            },
-            "cost_split": {"landlord_pct": 66, "tenant_pct": 34},
-            "credentials": "personal-ai/creds/bellcrest",
-        },
-    }
-}
 
 
 @pytest.fixture
@@ -43,9 +19,8 @@ def aws_env(monkeypatch):
         from tools.storage import BUCKET
         s3.create_bucket(Bucket=BUCKET)
 
-        # Create secrets
+        # Create credential secrets
         sm = boto3.client("secretsmanager", region_name="us-east-1")
-        sm.create_secret(Name="personal-ai/config", SecretString=json.dumps(TEST_CONFIG))
         sm.create_secret(
             Name="personal-ai/creds/windmill",
             SecretString=json.dumps({

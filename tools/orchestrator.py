@@ -6,8 +6,8 @@ import boto3
 from pdf2image import convert_from_path
 from tools.base import Tool, ToolResult
 from tools.browser import BrowserTool
-from tools.secrets import get_secret
 from tools.storage import bill_exists, download_bill, list_bills
+from config import PROPERTIES
 from tools.monitoring import log_tool_call, log_bedrock_call
 
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
@@ -159,16 +159,11 @@ def read_bill_pdf(property_slug: str, provider: str, bill_month: str, question: 
 
 
 def get_property_context() -> str:
-    try:
-        config = get_secret("personal-ai/config")
-        properties = config["properties"]
-        lines = ["Your properties:"]
-        for slug, info in properties.items():
-            providers = ", ".join(info["utilities"].keys())
-            lines.append(f"  - {slug}: {info['address']} (utilities: {providers})")
-        return "\n".join(lines)
-    except:
-        return ""
+    lines = ["Your properties:"]
+    for slug, info in PROPERTIES.items():
+        providers = ", ".join(info["utilities"])
+        lines.append(f"  - {slug} (utilities: {providers})")
+    return "\n".join(lines)
 
 
 SYSTEM_PROMPT = """You are a personal AI assistant for a property owner who manages multiple rental properties. You have tool access for downloading utility bills, reading them, calculating cost splits, and answering questions.

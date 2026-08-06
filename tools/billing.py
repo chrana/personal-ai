@@ -1,16 +1,15 @@
 import json
 import boto3
 from tools.base import ToolResult
-from tools.secrets import get_secret
 from tools.orchestrator import read_bill_pdf
+from config import PROPERTIES
 
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 MODEL = "us.anthropic.claude-sonnet-4-6"
 
 
 def get_cost_split(property_slug: str) -> dict:
-    config = get_secret("personal-ai/config")
-    prop = config["properties"].get(property_slug, {})
+    prop = PROPERTIES.get(property_slug, {})
     return prop.get("cost_split", {"landlord_pct": 100, "tenant_pct": 0})
 
 
@@ -55,10 +54,9 @@ def split_bill(property_slug: str, provider: str, bill_month: str) -> ToolResult
 
 
 def split_all_bills(bill_month: str) -> ToolResult:
-    config = get_secret("personal-ai/config")
     results = []
 
-    for slug, prop in config["properties"].items():
+    for slug, prop in PROPERTIES.items():
         split = prop.get("cost_split")
         if not split:
             continue

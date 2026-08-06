@@ -5,27 +5,19 @@ from playwright.async_api import async_playwright
 from tools.base import Tool, ToolResult
 from tools.secrets import get_secret
 from tools.storage import bill_exists, download_bill, upload_bill
+from config import PROPERTIES
 
 STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "storage")
 
 
-def get_config():
-    return get_secret("personal-ai/config")
-
-
 def resolve_property(property_name: str) -> str:
-    """Resolve a property name/address to its slug."""
-    config = get_config()
-    properties = config["properties"]
-
-    # Direct slug match
-    if property_name in properties:
+    """Resolve a property name to its slug."""
+    if property_name in PROPERTIES:
         return property_name
 
-    # Fuzzy match on address or slug keywords
     name_lower = property_name.lower()
-    for slug, info in properties.items():
-        if name_lower in slug or name_lower in info["address"].lower():
+    for slug in PROPERTIES:
+        if name_lower in slug:
             return slug
         for word in name_lower.split():
             if word in slug:
@@ -61,24 +53,17 @@ class BrowserTool(Tool):
 
         property_slug = resolve_property(property)
         if not property_slug:
-            config = get_config()
             return ToolResult(
                 success=False,
-                error=f"Unknown property: {property}. Available: {list(config['properties'].keys())}",
+                error=f"Unknown property: {property}. Available: {list(PROPERTIES.keys())}",
             )
 
         return await providers[provider](property_slug, bill_month)
 
     def _get_creds(self, property_slug: str, provider: str) -> dict:
-        config = get_config()
-        prop_config = config["properties"][property_slug]
-        # New format: single secret per property with provider sub-keys
-        if "credentials" in prop_config:
-            all_creds = get_secret(prop_config["credentials"])
-            return all_creds[provider]
-        # Legacy format: per-provider credential path
-        creds_path = prop_config["utilities"][provider]["credentials"]
-        return get_secret(creds_path)
+        secret_name = PROPERTIES[property_slug]["credentials_secret"]
+        all_creds = get_secret(secret_name)
+        return all_creds[provider]
 
     async def _enbridge(self, property_slug: str, bill_month: str) -> ToolResult:
         if bill_exists(property_slug, "enbridge", bill_month):
