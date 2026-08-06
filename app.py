@@ -1,12 +1,23 @@
 import os
+import time
 import json
 import sqlite3
 import boto3
 import chromadb
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
+from tools.monitoring import log_request
 
 app = FastAPI()
+
+
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = (time.time() - start) * 1000
+    log_request(request.method, request.url.path, response.status_code, duration_ms)
+    return response
 
 API_KEY = os.environ.get("API_KEY", "")
 

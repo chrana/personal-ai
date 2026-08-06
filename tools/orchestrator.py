@@ -1,4 +1,5 @@
 import json
+import time
 import base64
 import io
 import boto3
@@ -7,6 +8,7 @@ from tools.base import Tool, ToolResult
 from tools.browser import BrowserTool
 from tools.secrets import get_secret
 from tools.storage import bill_exists, download_bill
+from tools.monitoring import log_tool_call, log_bedrock_call
 
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 MODEL = "us.anthropic.claude-sonnet-4-6"
@@ -127,16 +129,22 @@ Be concise and helpful. Don't ask for information you already know from context.
 
 
 async def run_tool_call(name: str, input_data: dict) -> ToolResult:
+    start = time.time()
     if name == "download_utility_bill":
-        return await TOOLS["browser"].run(action="download_utility_bill", **input_data)
-    if name == "read_bill":
+        result = await TOOLS["browser"].run(action="download_utility_bill", **input_data)
+    elif name == "read_bill":
         question = input_data.pop("question", "")
         from tools.browser import resolve_property
         property_slug = resolve_property(input_data["property"])
         if not property_slug:
-            return ToolResult(success=False, error=f"Unknown property: {input_data['property']}")
-        return read_bill_pdf(property_slug, input_data["provider"], input_data["bill_month"], question)
-    return ToolResult(success=False, error=f"Unknown tool: {name}")
+            result = ToolResult(success=False, error=f"Unknown property: {input_data['property']}")
+        else:
+            result = read_bill_pdf(property_slug, input_data["provider"], input_data["bill_month"], question)
+    else:
+        result = ToolResult(success=False, error=f"Unknown tool: {name}")
+    duration_ms = (time.time() - start) * 1000
+    log_tool_call(name, result.success, duration_ms, **input_data)
+    return result
 
 
 async def orchestrate(messages: list, memory_context: str = "") -> dict:
@@ -150,6 +158,7 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
     max_rounds = 5
 
     for _ in range(max_rounds):
+        bedrock_start = time.time()
         response = bedrock.invoke_model(
             modelId=MODEL,
             contentType="application/json",
@@ -164,6 +173,9 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
         )
 
         result = json.loads(response["body"].read())
+        bedrock_ms = (time.time() - bedrock_start) * 1000
+        usage = result.get("usage", {})
+        log_bedrock_call(MODEL, usage.get("input_tokens", 0), usage.get("output_tokens", 0), bedrock_ms)
         stop_reason = result.get("stop_reason")
 
         if stop_reason != "tool_use":
