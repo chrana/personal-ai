@@ -202,9 +202,11 @@ async def send_monthly_summary():
     body = "\n".join(lines)
     subject = f"Bills Summary — {usage_month} usage"
 
-    print(f"  Sending summary:\n{body}")
-    print(f"  Attachments: {[a['filename'] for a in attachments]}")
-    send_bill_summary(subject, body, attachments=attachments)
+    from tools.notify import build_html_summary
+    html = build_html_summary(data, usage_month)
+
+    print(f"  Sending summary ({len(attachments)} attachments)")
+    send_bill_summary(subject, body, attachments=attachments, html=html)
     print("  Sent!")
 
 
