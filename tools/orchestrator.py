@@ -24,7 +24,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Utility provider key (e.g. 'enbridge')",
+                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water')",
                 },
                 "property": {
                     "type": "string",
@@ -46,7 +46,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Utility provider key (e.g. 'enbridge')",
+                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water')",
                 },
                 "property": {
                     "type": "string",
@@ -146,28 +146,36 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
     if memory_context:
         system += f"\n\nRelevant memories from past conversations:\n{memory_context}"
 
-    response = bedrock.invoke_model(
-        modelId=MODEL,
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
-            "system": system,
-            "messages": messages,
-            "tools": TOOL_DEFINITIONS,
-        }),
-    )
+    all_tools_used = []
+    max_rounds = 5
 
-    result = json.loads(response["body"].read())
-    stop_reason = result.get("stop_reason")
+    for _ in range(max_rounds):
+        response = bedrock.invoke_model(
+            modelId=MODEL,
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 2048,
+                "system": system,
+                "messages": messages,
+                "tools": TOOL_DEFINITIONS,
+            }),
+        )
 
-    if stop_reason == "tool_use":
-        tool_results = []
+        result = json.loads(response["body"].read())
+        stop_reason = result.get("stop_reason")
+
+        if stop_reason != "tool_use":
+            text = next((b["text"] for b in result["content"] if b["type"] == "text"), "")
+            return {"response": text, "tools_used": all_tools_used}
+
         assistant_content = result["content"]
+        tool_results = []
 
         for block in assistant_content:
             if block["type"] == "tool_use":
+                all_tools_used.append(block["name"])
                 tool_result = await run_tool_call(block["name"], block["input"])
                 tool_results.append({
                     "type": "tool_result",
@@ -178,21 +186,5 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
         messages.append({"role": "assistant", "content": assistant_content})
         messages.append({"role": "user", "content": tool_results})
 
-        final_response = bedrock.invoke_model(
-            modelId=MODEL,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 1024,
-                "system": system,
-                "messages": messages,
-                "tools": TOOL_DEFINITIONS,
-            }),
-        )
-        final_result = json.loads(final_response["body"].read())
-        text = next((b["text"] for b in final_result["content"] if b["type"] == "text"), "")
-        return {"response": text, "tools_used": [b["name"] for b in assistant_content if b["type"] == "tool_use"]}
-
     text = next((b["text"] for b in result["content"] if b["type"] == "text"), "")
-    return {"response": text, "tools_used": []}
+    return {"response": text, "tools_used": all_tools_used}

@@ -49,6 +49,7 @@ class BrowserTool(Tool):
     async def _download_utility_bill(self, provider: str, property: str, bill_month: str) -> ToolResult:
         providers = {
             "enbridge": self._enbridge,
+            "peel-water": self._peel_water,
         }
         if provider not in providers:
             return ToolResult(
@@ -89,7 +90,8 @@ class BrowserTool(Tool):
 
         username = creds["username"]
         password = creds["password"]
-        totp = pyotp.TOTP(creds["totp_secret"])
+        totp_secret = creds.get("totp_secret", "")
+        mfa_method = creds.get("mfa_method", "totp")
 
         os.makedirs(STORAGE_DIR, exist_ok=True)
         filename = f"{property_slug}_enbridge_{bill_month}.pdf"
@@ -112,7 +114,16 @@ class BrowserTool(Tool):
                 # MFA page
                 await page.wait_for_timeout(5000)
 
-                mfa_code = totp.now()
+                if mfa_method == "email" or not totp_secret:
+                    from tools.mfa import get_mfa_code
+                    mfa_code = get_mfa_code(sender_filter="enbridge", max_wait=60)
+                    if not mfa_code:
+                        await browser.close()
+                        return ToolResult(success=False, error="MFA code not received via email within 60s")
+                else:
+                    totp = pyotp.TOTP(totp_secret)
+                    mfa_code = totp.now()
+
                 mfa_input = page.locator('input[name="answer"], input[name="credentials.passcode"], input[type="tel"]').first
                 await mfa_input.wait_for(timeout=10000)
                 await mfa_input.fill(mfa_code)
@@ -178,6 +189,82 @@ class BrowserTool(Tool):
                 success=True,
                 data={
                     "provider": "enbridge",
+                    "property": property_slug,
+                    "bill_month": bill_month,
+                    "filepath": filepath,
+                    "source": "downloaded",
+                },
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    async def _peel_water(self, property_slug: str, bill_month: str) -> ToolResult:
+        if bill_exists(property_slug, "peel-water", bill_month):
+            local_path = download_bill(property_slug, "peel-water", bill_month)
+            return ToolResult(
+                success=True,
+                data={
+                    "provider": "peel-water",
+                    "property": property_slug,
+                    "bill_month": bill_month,
+                    "filepath": local_path,
+                    "source": "cache",
+                },
+            )
+
+        config = get_config()
+        prop_config = config["properties"][property_slug]
+        creds_path = prop_config["utilities"]["peel-water"]["credentials"]
+        creds = get_secret(creds_path)
+
+        username = creds["username"]
+        password = creds["password"]
+
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+        filename = f"{property_slug}_peel-water_{bill_month}.pdf"
+        filepath = os.path.join(STORAGE_DIR, filename)
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(viewport={"width": 1280, "height": 800})
+                page = await context.new_page()
+
+                await page.goto("https://peelregion.idoxs.ca/authentication/login")
+                await page.wait_for_selector("#bannerSignInUsername", timeout=15000)
+                await page.fill("#bannerSignInUsername", username)
+                await page.fill("#bannerSignInPassword", password)
+                await page.click('button[type="submit"]')
+                await page.wait_for_load_state("load", timeout=15000)
+                await page.wait_for_timeout(5000)
+
+                # Navigate to Bills page via visible link
+                await page.evaluate('() => { const links = document.querySelectorAll("a"); for (const l of links) { if (l.href.includes("Bills.aspx") && l.offsetParent !== null) { l.click(); break; } } }')
+                await page.wait_for_timeout(5000)
+
+                # Hover row to reveal actions, click View Bill
+                row = page.locator('[id$="_divRow"]').first
+                await row.hover()
+                await page.wait_for_timeout(1000)
+                view_link = page.locator('[id$="_lnkViewBill"]').first
+                await view_link.click()
+                await page.wait_for_load_state("load", timeout=15000)
+                await page.wait_for_timeout(5000)
+
+                # Click PDF download button
+                async with page.expect_download(timeout=15000) as dl_info:
+                    await page.locator("#ibPDFDownload").click()
+                download_file = await dl_info.value
+                await download_file.save_as(filepath)
+
+                await browser.close()
+
+            upload_bill(filepath, property_slug, "peel-water", bill_month)
+
+            return ToolResult(
+                success=True,
+                data={
+                    "provider": "peel-water",
                     "property": property_slug,
                     "bill_month": bill_month,
                     "filepath": filepath,
