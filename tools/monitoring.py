@@ -1,24 +1,28 @@
+import os
 import time
 import json
 import logging
 import boto3
-import watchtower
 
 LOG_GROUP = "personal-ai"
 NAMESPACE = "PersonalAI"
 
-cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
-
 logger = logging.getLogger("personal-ai")
 logger.setLevel(logging.INFO)
 
-cw_handler = watchtower.CloudWatchLogHandler(
-    log_group_name=LOG_GROUP,
-    stream_name="app",
-    boto3_client=boto3.client("logs", region_name="us-east-1"),
-)
-cw_handler.setFormatter(logging.Formatter("%(message)s"))
-logger.addHandler(cw_handler)
+if os.environ.get("TESTING") != "1":
+    import watchtower
+    cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
+    cw_handler = watchtower.CloudWatchLogHandler(
+        log_group_name=LOG_GROUP,
+        stream_name="app",
+        boto3_client=boto3.client("logs", region_name="us-east-1"),
+    )
+    cw_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(cw_handler)
+else:
+    cloudwatch = None
+    logger.addHandler(logging.StreamHandler())
 
 
 def log_request(method: str, path: str, status: int, duration_ms: float, **extra):
@@ -82,6 +86,8 @@ def log_browser(provider: str, property_slug: str, success: bool, duration_ms: f
 
 
 def _put_metric(name: str, value: float, unit: str, dimensions: dict):
+    if not cloudwatch:
+        return
     try:
         cloudwatch.put_metric_data(
             Namespace=NAMESPACE,
