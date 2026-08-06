@@ -2,11 +2,12 @@
 """Scheduled bill download and summary. Run via cron.
 
 Schedule (crontab, 9am EST / 14:00 UTC):
-  Enbridge:   16th monthly
-  Peel Water: 1st of Jan/Apr/Jul/Oct
-  Alectra:    25th monthly
+  Enbridge:        16th monthly
+  Peel Water:      1st of Jan/Apr/Jul/Oct
+  Alectra:         25th monthly
+  Monthly Summary: 1st monthly (iMessage via SES)
 
-Run manually: python scheduled_bills.py [enbridge|peel-water|alectra|all]
+Run manually: python scheduled_bills.py [enbridge|peel-water|alectra|all|monthly-summary]
 """
 
 import asyncio
@@ -130,7 +131,56 @@ async def main():
         results = await run_alectra()
         report_cron_metric("alectra", results)
 
+    if provider == "monthly-summary":
+        await send_monthly_summary()
+
     print("Done.")
+
+
+async def send_monthly_summary():
+    """Generate and send monthly bill summary with tenant splits."""
+    from tools.billing import split_all_bills
+    from tools.notify import send_bill_summary
+
+    now = datetime.now()
+    bill_month = now.strftime("%Y-%m")
+    result = split_all_bills(bill_month)
+
+    if not result.success or not result.data["bills"]:
+        print("  No bills to summarize")
+        return
+
+    data = result.data
+    lines = [f"Utility Bill Summary — {bill_month}", ""]
+
+    for prop in ["windmill", "bellcrest"]:
+        prop_bills = [b for b in data["bills"] if b["property"] == prop]
+        if not prop_bills:
+            continue
+        split_pct = prop_bills[0]["tenant_pct"]
+        lines.append(f"{'=' * 30}")
+        lines.append(f"{prop.upper()} (tenant pays {split_pct}%)")
+        lines.append(f"{'=' * 30}")
+        prop_total = 0
+        tenant_total = 0
+        for b in prop_bills:
+            lines.append(f"  {b['provider']:12} ${b['total']:>8.2f}  → tenant: ${b['tenant_amount']:.2f}")
+            prop_total += b["total"]
+            tenant_total += b["tenant_amount"]
+        lines.append(f"  {'TOTAL':12} ${prop_total:>8.2f}  → tenant: ${tenant_total:.2f}")
+        lines.append("")
+
+    lines.append(f"{'=' * 30}")
+    lines.append(f"YOUR TOTAL (landlord): ${data['landlord_total']:.2f}")
+    for prop, amount in data["tenant_totals"].items():
+        lines.append(f"  {prop} tenant owes: ${amount:.2f}")
+
+    body = "\n".join(lines)
+    subject = f"Bills Summary — {bill_month}"
+
+    print(f"  Sending summary:\n{body}")
+    send_bill_summary(subject, body)
+    print("  Sent!")
 
 
 if __name__ == "__main__":
