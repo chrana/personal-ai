@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Scheduled bill download and summary. Run via cron."""
+"""Scheduled bill download and summary. Run via cron.
+
+Schedule (crontab, 9am EST / 14:00 UTC):
+  Enbridge:   16th monthly
+  Peel Water: 1st of Jan/Apr/Jul/Oct
+  Alectra:    25th monthly
+
+Run manually: python scheduled_bills.py [enbridge|peel-water|alectra|all]
+"""
 
 import asyncio
 import json
