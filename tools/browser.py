@@ -69,8 +69,18 @@ class BrowserTool(Tool):
 
         return await providers[provider](property_slug, bill_month)
 
+    def _get_creds(self, property_slug: str, provider: str) -> dict:
+        config = get_config()
+        prop_config = config["properties"][property_slug]
+        # New format: single secret per property with provider sub-keys
+        if "credentials" in prop_config:
+            all_creds = get_secret(prop_config["credentials"])
+            return all_creds[provider]
+        # Legacy format: per-provider credential path
+        creds_path = prop_config["utilities"][provider]["credentials"]
+        return get_secret(creds_path)
+
     async def _enbridge(self, property_slug: str, bill_month: str) -> ToolResult:
-        # Check S3 first
         if bill_exists(property_slug, "enbridge", bill_month):
             local_path = download_bill(property_slug, "enbridge", bill_month)
             return ToolResult(
@@ -84,12 +94,7 @@ class BrowserTool(Tool):
                 },
             )
 
-        # Get property config
-        config = get_config()
-        prop_config = config["properties"][property_slug]
-        creds_path = prop_config["utilities"]["enbridge"]["credentials"]
-        creds = get_secret(creds_path)
-
+        creds = self._get_creds(property_slug, "enbridge")
         username = creds["username"]
         password = creds["password"]
         totp_secret = creds.get("totp_secret", "")
@@ -214,11 +219,7 @@ class BrowserTool(Tool):
                 },
             )
 
-        config = get_config()
-        prop_config = config["properties"][property_slug]
-        creds_path = prop_config["utilities"]["peel-water"]["credentials"]
-        creds = get_secret(creds_path)
-
+        creds = self._get_creds(property_slug, "peel-water")
         username = creds["username"]
         password = creds["password"]
 
@@ -290,11 +291,7 @@ class BrowserTool(Tool):
                 },
             )
 
-        config = get_config()
-        prop_config = config["properties"][property_slug]
-        creds_path = prop_config["utilities"]["alectra"]["credentials"]
-        creds = get_secret(creds_path)
-
+        creds = self._get_creds(property_slug, "alectra")
         username = creds["username"]
         password = creds["password"]
 
