@@ -79,17 +79,29 @@ async def run_peel_water():
     return results
 
 
+def report_cron_metric(provider: str, results: list):
+    """Push cron run metrics to CloudWatch."""
+    from tools.monitoring import _put_metric
+    succeeded = sum(1 for r in results if r["status"] in ("downloaded", "cached"))
+    failed = sum(1 for r in results if r["status"] == "failed")
+    _put_metric("CronRunSuccess", succeeded, "Count", {"Provider": provider})
+    _put_metric("CronRunFailed", failed, "Count", {"Provider": provider})
+    _put_metric("CronRunTotal", 1, "Count", {"Provider": provider})
+
+
 async def main():
     provider = sys.argv[1] if len(sys.argv) > 1 else "all"
     print(f"[{datetime.now().isoformat()}] Scheduled bill fetch: {provider}")
 
     if provider in ("enbridge", "all"):
         print("Enbridge:")
-        await run_enbridge()
+        results = await run_enbridge()
+        report_cron_metric("enbridge", results)
 
     if provider in ("peel-water", "all"):
         print("Peel Water:")
-        await run_peel_water()
+        results = await run_peel_water()
+        report_cron_metric("peel-water", results)
 
     print("Done.")
 
