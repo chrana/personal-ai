@@ -26,7 +26,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra')",
+                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra', 'enercare')",
                 },
                 "property": {
                     "type": "string",
@@ -62,7 +62,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra')",
+                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra', 'enercare')",
                 },
                 "property": {
                     "type": "string",
@@ -84,7 +84,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "provider": {
                     "type": "string",
-                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra')",
+                    "description": "Utility provider key (e.g. 'enbridge', 'peel-water', 'alectra', 'enercare')",
                 },
                 "property": {
                     "type": "string",
@@ -170,7 +170,7 @@ SYSTEM_PROMPT = """You are a personal AI assistant for a property owner who mana
 
 {property_context}
 
-Cost split: Windmill 30% landlord / 70% tenant. Bellcrest 66% landlord / 34% tenant.
+Cost split: Windmill 30% landlord / 70% tenant. Bellcrest 67% landlord / 33% tenant.
 
 Today's date: {today}
 

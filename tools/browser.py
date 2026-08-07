@@ -44,6 +44,7 @@ class BrowserTool(Tool):
             "enbridge": self._enbridge,
             "peel-water": self._peel_water,
             "alectra": self._alectra,
+            "enercare": self._enercare,
         }
         if provider not in providers:
             return ToolResult(
@@ -358,6 +359,102 @@ class BrowserTool(Tool):
                 success=True,
                 data={
                     "provider": "alectra",
+                    "property": property_slug,
+                    "bill_month": bill_month,
+                    "filepath": filepath,
+                    "source": "downloaded",
+                },
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    async def _enercare(self, property_slug: str, bill_month: str) -> ToolResult:
+        if bill_exists(property_slug, "enercare", bill_month):
+            local_path = download_bill(property_slug, "enercare", bill_month)
+            return ToolResult(
+                success=True,
+                data={
+                    "provider": "enercare",
+                    "property": property_slug,
+                    "bill_month": bill_month,
+                    "filepath": local_path,
+                    "source": "cache",
+                },
+            )
+
+        creds = self._get_creds(property_slug, "enercare")
+        username = creds["username"]
+        password = creds["password"]
+
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+        filename = f"{property_slug}_enercare_{bill_month}.pdf"
+        filepath = os.path.join(STORAGE_DIR, filename)
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(viewport={"width": 1280, "height": 800})
+                page = await context.new_page()
+
+                await page.goto("https://myaccount.enercare.ca")
+                await page.wait_for_load_state("load", timeout=20000)
+                await page.wait_for_timeout(3000)
+
+                await page.fill("#signInName", username)
+                await page.fill("#password", password)
+                await page.click("#next")
+                await page.wait_for_load_state("load", timeout=30000)
+                await page.wait_for_timeout(10000)
+
+                # Dismiss promo overlay
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(2000)
+
+                close_btn = page.locator('button:has-text("Close")')
+                if await close_btn.count() > 0 and await close_btn.first.is_visible():
+                    await close_btn.first.click()
+                    await page.wait_for_timeout(1000)
+
+                # Navigate to Billing
+                await page.click('a.nav-link:has-text("Billing")')
+                await page.wait_for_timeout(5000)
+
+                # Find the first Bill row's download button
+                table = page.locator("table").first
+                bill_rows = await table.locator("tbody tr").all()
+
+                download_btn = None
+                for row in bill_rows:
+                    cells = await row.locator("td").all()
+                    if len(cells) >= 4:
+                        type_text = (await cells[2].text_content() or "").strip()
+                        if type_text == "Bill":
+                            btn = cells[-1].locator("button").first
+                            if await btn.count() > 0:
+                                download_btn = btn
+                                break
+
+                if not download_btn:
+                    await browser.close()
+                    return ToolResult(success=False, error="No bill download button found")
+
+                async with page.expect_download(timeout=15000) as dl_info:
+                    await download_btn.click()
+                download_file = await dl_info.value
+                await download_file.save_as(filepath)
+
+                await browser.close()
+
+            with open(filepath, "rb") as f:
+                if f.read(4) != b"%PDF":
+                    return ToolResult(success=False, error="Downloaded file is not a valid PDF")
+
+            upload_bill(filepath, property_slug, "enercare", bill_month)
+
+            return ToolResult(
+                success=True,
+                data={
+                    "provider": "enercare",
                     "property": property_slug,
                     "bill_month": bill_month,
                     "filepath": filepath,

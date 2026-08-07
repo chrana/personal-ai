@@ -5,9 +5,10 @@ Schedule (crontab, 9am EST / 14:00 UTC):
   Enbridge:        16th monthly
   Peel Water:      1st of Jan/Apr/Jul/Oct
   Alectra:         25th monthly
-  Monthly Summary: 1st monthly (iMessage via SES)
+  Enercare:        10th monthly (bellcrest only)
+  Monthly Summary: 1st monthly (via SES)
 
-Run manually: python scheduled_bills.py [enbridge|peel-water|alectra|all|monthly-summary]
+Run manually: python scheduled_bills.py [enbridge|peel-water|alectra|enercare|all|monthly-summary]
 """
 
 import asyncio
@@ -102,6 +103,17 @@ async def run_alectra():
     return results
 
 
+async def run_enercare():
+    """Monthly: download current bill for bellcrest (enercare is bellcrest-only)."""
+    now = datetime.now()
+    bill_month = now.strftime("%Y-%m")
+
+    result = await download_bill("enercare", "bellcrest", bill_month)
+    print(f"  bellcrest/enercare/{bill_month}: {result['status']}")
+
+    return [result]
+
+
 def report_cron_metric(provider: str, results: list):
     """Push cron run metrics to CloudWatch."""
     from tools.monitoring import _put_metric
@@ -130,6 +142,11 @@ async def main():
         print("Alectra:")
         results = await run_alectra()
         report_cron_metric("alectra", results)
+
+    if provider in ("enercare", "all"):
+        print("Enercare:")
+        results = await run_enercare()
+        report_cron_metric("enercare", results)
 
     if provider == "monthly-summary":
         await send_monthly_summary()
