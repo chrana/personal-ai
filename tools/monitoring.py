@@ -85,6 +85,17 @@ def log_browser(provider: str, property_slug: str, success: bool, duration_ms: f
         _put_metric("BrowserErrors", 1, "Count", {"Provider": provider})
 
 
+def log_orchestrator_error(error_type: str, detail: any, **extra):
+    entry = {
+        "type": "orchestrator_error",
+        "error_type": error_type,
+        "detail": detail,
+        **extra,
+    }
+    logger.warning(json.dumps(entry))
+    _put_metric("OrchestratorErrors", 1, "Count", {"ErrorType": error_type})
+
+
 def _put_metric(name: str, value: float, unit: str, dimensions: dict):
     if not cloudwatch:
         return

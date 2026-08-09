@@ -8,7 +8,7 @@ from tools.base import Tool, ToolResult
 from tools.browser import BrowserTool
 from tools.storage import bill_exists, download_bill, list_bills
 from config import PROPERTIES
-from tools.monitoring import log_tool_call, log_bedrock_call
+from tools.monitoring import log_tool_call, log_bedrock_call, log_orchestrator_error
 
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
 MODEL = "us.anthropic.claude-sonnet-4-6"
@@ -238,7 +238,7 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
             accept="application/json",
             body=json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 2048,
+                "max_tokens": 4096,
                 "system": system,
                 "messages": messages,
                 "tools": TOOL_DEFINITIONS,
@@ -250,6 +250,13 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
         usage = result.get("usage", {})
         log_bedrock_call(MODEL, usage.get("input_tokens", 0), usage.get("output_tokens", 0), bedrock_ms)
         stop_reason = result.get("stop_reason")
+
+        if stop_reason == "max_tokens":
+            log_orchestrator_error("truncated_response", usage.get("output_tokens", 0),
+                                   user_message=messages[0]["content"] if messages else "")
+            messages.append({"role": "assistant", "content": result["content"]})
+            messages.append({"role": "user", "content": [{"type": "text", "text": "Your response was cut off. Please continue, using tools as needed."}]})
+            continue
 
         if stop_reason != "tool_use":
             text = next((b["text"] for b in result["content"] if b["type"] == "text"), "")
@@ -271,5 +278,9 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
         messages.append({"role": "assistant", "content": assistant_content})
         messages.append({"role": "user", "content": tool_results})
 
+    log_orchestrator_error("max_rounds_exhausted", max_rounds,
+                           user_message=messages[0]["content"] if messages else "")
     text = next((b["text"] for b in result["content"] if b["type"] == "text"), "")
+    if not text or stop_reason == "max_tokens":
+        return {"response": "Sorry, I wasn't able to complete that request — it was too complex for a single turn. Try breaking it into smaller asks (e.g. one property or provider at a time).", "tools_used": all_tools_used, "error": True}
     return {"response": text, "tools_used": all_tools_used}
