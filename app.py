@@ -186,9 +186,10 @@ async function send() {
       const lines = buffer.split('\\n');
       buffer = lines.pop();
 
-      for (const line of lines) {
+      for (let line of lines) {
+        line = line.replace('\\r', '');
         if (line.startsWith('event: ')) {
-          var eventType = line.slice(7);
+          var eventType = line.slice(7).trim();
         } else if (line.startsWith('data: ') && eventType) {
           if (eventType === 'ping') { eventType = null; continue; }
           const payload = JSON.parse(line.slice(6));
