@@ -190,13 +190,13 @@ async function send() {
         if (line.startsWith('event: ')) {
           var eventType = line.slice(7);
         } else if (line.startsWith('data: ') && eventType) {
+          if (eventType === 'ping') { eventType = null; continue; }
           const payload = JSON.parse(line.slice(6));
           if (eventType === 'progress') {
             const step = document.createElement('div');
             step.className = 'step active';
             step.textContent = payload.status;
             progressEl.appendChild(step);
-            // Deactivate previous steps
             const prev = progressEl.querySelectorAll('.step.active');
             prev.forEach((s, i) => { if (i < prev.length - 1) s.classList.remove('active'); });
             chat.scrollTop = chat.scrollHeight;
@@ -341,26 +341,34 @@ async def agent_stream(request: Request, authorization: str = Header(None)):
     async def on_progress(msg: str):
         await progress_queue.put(msg)
 
-    async def generate():
-        from tools.orchestrator import orchestrate
-        task = asyncio.create_task(orchestrate(history, memory_context=memory_context, on_progress=on_progress))
+    from tools.orchestrator import orchestrate
+    task = asyncio.create_task(orchestrate(history, memory_context=memory_context, on_progress=on_progress))
 
+    def save_result(t):
+        try:
+            result = t.result()
+            assistant_msg = result["response"]
+            aid = save_message(session_id, "assistant", assistant_msg)
+            remember(assistant_msg, session_id, "assistant", aid)
+        except Exception:
+            pass
+
+    task.add_done_callback(save_result)
+
+    async def generate():
         while not task.done():
             try:
                 msg = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
                 yield {"event": "progress", "data": json.dumps({"status": msg})}
             except asyncio.TimeoutError:
+                yield {"event": "ping", "data": ""}
                 continue
 
-        # Drain remaining progress messages
         while not progress_queue.empty():
             msg = await progress_queue.get()
             yield {"event": "progress", "data": json.dumps({"status": msg})}
 
         result = task.result()
-        assistant_msg = result["response"]
-        aid = save_message(session_id, "assistant", assistant_msg)
-        remember(assistant_msg, session_id, "assistant", aid)
         yield {"event": "done", "data": json.dumps({**result, "session_id": session_id})}
 
     return EventSourceResponse(generate())
