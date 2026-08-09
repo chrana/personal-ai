@@ -1,11 +1,13 @@
 import os
 import time
 import json
+import asyncio
 import sqlite3
 import boto3
 import chromadb
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
+from sse_starlette.sse import EventSourceResponse
 from tools.monitoring import log_request
 
 app = FastAPI()
@@ -126,11 +128,16 @@ body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; c
 .msg { margin: 8px 0; padding: 10px 14px; border-radius: 12px; max-width: 85%; white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; }
 .user { background: #0f3460; margin-left: auto; }
 .assistant { background: #16213e; }
+.error { background: #3d1515; border: 1px solid #e94560; }
+.progress { font-size: 13px; color: #8892b0; padding: 6px 12px; margin: 4px 0; }
+.progress .step { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.progress .step::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #4ecdc4; flex-shrink: 0; }
+.progress .step.active::before { animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 #input-area { display: flex; padding: 12px; gap: 8px; background: #0f0f1a; }
 #msg { flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #333; background: #1a1a2e; color: #eee; font-size: 16px; }
 #send { padding: 12px 20px; border-radius: 8px; border: none; background: #e94560; color: #fff; font-size: 16px; cursor: pointer; }
 #send:disabled { opacity: 0.5; }
-.typing { opacity: 0.6; font-style: italic; }
 </style>
 </head><body>
 <div id="chat"></div>
@@ -155,25 +162,59 @@ async function send() {
   addMsg(text, 'user');
   input.value = '';
   btn.disabled = true;
-  const typing = addMsg('Thinking...', 'assistant typing');
+
+  const progressEl = document.createElement('div');
+  progressEl.className = 'progress';
+  chat.appendChild(progressEl);
+
   try {
-    const res = await fetch('/agent', {
+    const res = await fetch('/agent/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + KEY },
       body: JSON.stringify({ message: text, session_id: SESSION })
     });
-    const data = await res.json();
-    typing.remove();
-    if (res.ok) {
-      let reply = data.response;
-      if (data.tools_used && data.tools_used.length) reply += '\\n\\n[tools: ' + data.tools_used.join(', ') + ']';
-      addMsg(reply, 'assistant');
-    } else {
-      addMsg('Error: ' + (data.detail || res.status), 'assistant');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          var eventType = line.slice(7);
+        } else if (line.startsWith('data: ') && eventType) {
+          const payload = JSON.parse(line.slice(6));
+          if (eventType === 'progress') {
+            const step = document.createElement('div');
+            step.className = 'step active';
+            step.textContent = payload.status;
+            progressEl.appendChild(step);
+            // Deactivate previous steps
+            const prev = progressEl.querySelectorAll('.step.active');
+            prev.forEach((s, i) => { if (i < prev.length - 1) s.classList.remove('active'); });
+            chat.scrollTop = chat.scrollHeight;
+          } else if (eventType === 'done') {
+            progressEl.remove();
+            if (payload.error) {
+              addMsg(payload.response, 'error');
+            } else {
+              addMsg(payload.response, 'assistant');
+            }
+          }
+          eventType = null;
+        }
+      }
     }
   } catch(e) {
-    typing.remove();
-    addMsg('Error: ' + e.message, 'assistant');
+    progressEl.remove();
+    addMsg('Connection error: ' + e.message, 'error');
   }
   btn.disabled = false;
   input.focus();
@@ -279,3 +320,47 @@ async def agent(request: Request, authorization: str = Header(None)):
     remember(assistant_msg, session_id, "assistant", aid)
 
     return {**result, "session_id": session_id}
+
+
+@app.post("/agent/stream")
+async def agent_stream(request: Request, authorization: str = Header(None)):
+    verify_key(authorization)
+    body = await request.json()
+    message = body.get("message", "")
+    session_id = body.get("session_id", "default")
+
+    msg_id = save_message(session_id, "user", message)
+    remember(message, session_id, "user", msg_id)
+
+    history = get_history(session_id)
+    memories = recall(message)
+    memory_context = "\n".join(f"- {m}" for m in memories) if memories else ""
+
+    progress_queue = asyncio.Queue()
+
+    async def on_progress(msg: str):
+        await progress_queue.put(msg)
+
+    async def generate():
+        from tools.orchestrator import orchestrate
+        task = asyncio.create_task(orchestrate(history, memory_context=memory_context, on_progress=on_progress))
+
+        while not task.done():
+            try:
+                msg = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
+                yield {"event": "progress", "data": json.dumps({"status": msg})}
+            except asyncio.TimeoutError:
+                continue
+
+        # Drain remaining progress messages
+        while not progress_queue.empty():
+            msg = await progress_queue.get()
+            yield {"event": "progress", "data": json.dumps({"status": msg})}
+
+        result = task.result()
+        assistant_msg = result["response"]
+        aid = save_message(session_id, "assistant", assistant_msg)
+        remember(assistant_msg, session_id, "assistant", aid)
+        yield {"event": "done", "data": json.dumps({**result, "session_id": session_id})}
+
+    return EventSourceResponse(generate())

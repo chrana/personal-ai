@@ -219,7 +219,24 @@ async def run_tool_call(name: str, input_data: dict) -> ToolResult:
     return result
 
 
-async def orchestrate(messages: list, memory_context: str = "") -> dict:
+def _describe_tool_call(name: str, input_data: dict) -> str:
+    prop = input_data.get("property", "")
+    provider = input_data.get("provider", "")
+    month = input_data.get("bill_month", input_data.get("usage_month", ""))
+    if name == "download_utility_bill":
+        return f"Downloading {prop}/{provider} {month}..."
+    elif name == "read_bill":
+        return f"Reading {prop}/{provider} {month}..."
+    elif name == "split_bill":
+        return f"Splitting {prop}/{provider} {month}..."
+    elif name == "split_all_bills":
+        return f"Calculating splits for {month}..."
+    elif name == "list_bills":
+        return f"Listing bills{' for ' + prop if prop else ''}..."
+    return f"Running {name}..."
+
+
+async def orchestrate(messages: list, memory_context: str = "", on_progress=None) -> dict:
     from datetime import date
     property_context = get_property_context()
     system = SYSTEM_PROMPT.format(property_context=property_context, today=date.today().isoformat())
@@ -227,10 +244,16 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
     if memory_context:
         system += f"\n\nRelevant memories from past conversations:\n{memory_context}"
 
+    async def emit(msg):
+        if on_progress:
+            await on_progress(msg)
+
     all_tools_used = []
     max_rounds = 5
 
-    for _ in range(max_rounds):
+    await emit("Thinking...")
+
+    for round_num in range(max_rounds):
         bedrock_start = time.time()
         response = bedrock.invoke_model(
             modelId=MODEL,
@@ -254,6 +277,7 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
         if stop_reason == "max_tokens":
             log_orchestrator_error("truncated_response", usage.get("output_tokens", 0),
                                    user_message=messages[0]["content"] if messages else "")
+            await emit("Response was too long, continuing...")
             messages.append({"role": "assistant", "content": result["content"]})
             messages.append({"role": "user", "content": [{"type": "text", "text": "Your response was cut off. Please continue, using tools as needed."}]})
             continue
@@ -268,6 +292,7 @@ async def orchestrate(messages: list, memory_context: str = "") -> dict:
         for block in assistant_content:
             if block["type"] == "tool_use":
                 all_tools_used.append(block["name"])
+                await emit(_describe_tool_call(block["name"], block["input"]))
                 tool_result = await run_tool_call(block["name"], block["input"])
                 tool_results.append({
                     "type": "tool_result",
