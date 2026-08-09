@@ -65,7 +65,26 @@ class BrowserTool(Tool):
         if result.success and result.data.get("source") == "downloaded":
             try:
                 from tools.extract import extract_and_save_metadata
-                extract_and_save_metadata(property_slug, provider, bill_month)
+                meta = extract_and_save_metadata(property_slug, provider, bill_month)
+                # Dedup: if a bill with this billing period already exists under a
+                # different month key, remove the duplicate we just created
+                if meta and meta.get("billing_period_end"):
+                    from tools.storage import list_all_metadata
+                    existing = [
+                        m for m in list_all_metadata()
+                        if m.get("property") == property_slug
+                        and m.get("provider") == provider
+                        and m.get("billing_period_end") == meta["billing_period_end"]
+                        and m.get("bill_month") != bill_month
+                    ]
+                    if existing:
+                        from tools.storage import s3, BUCKET
+                        s3.delete_object(Bucket=BUCKET, Key=f"bills/{property_slug}/{provider}/{bill_month}.pdf")
+                        s3.delete_object(Bucket=BUCKET, Key=f"bills/{property_slug}/{provider}/{bill_month}.json")
+                        result = ToolResult(
+                            success=True,
+                            data={**result.data, "source": "duplicate", "existing_month": existing[0]["bill_month"]},
+                        )
             except Exception:
                 pass
 
