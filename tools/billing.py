@@ -15,7 +15,7 @@ def get_cost_split(property_slug: str) -> dict:
 
 def split_from_metadata(meta: dict) -> dict:
     split = get_cost_split(meta["property"])
-    total = meta["total_amount"]
+    total = max(meta["total_amount"], 0)
     landlord_amount = round(total * split["landlord_pct"] / 100, 2)
     tenant_amount = round(total * split["tenant_pct"] / 100, 2)
     return {
