@@ -15,13 +15,17 @@ def _get_rent_config():
     return get_secret("personal-ai/rent-config")
 
 
-def _resolve_property(sender_name: str, rent_config: dict) -> str:
+def _resolve_property(sender_name: str, rent_config: dict):
+    """Returns (property, unit_type) where unit_type is 'main' or 'second'."""
     name_lower = sender_name.lower().strip()
     for prop, cfg in rent_config.items():
-        for tenant in cfg.get("tenants", []):
+        for tenant in cfg.get("tenants_main", []):
             if tenant.lower() in name_lower or name_lower in tenant.lower():
-                return prop
-    return ""
+                return (prop, "main")
+        for tenant in cfg.get("tenants_second", []):
+            if tenant.lower() in name_lower or name_lower in tenant.lower():
+                return (prop, "second")
+    return ("", "")
 
 
 def init_ledger():
@@ -31,6 +35,7 @@ def init_ledger():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL,
             property TEXT NOT NULL,
+            unit TEXT NOT NULL DEFAULT 'main',
             type TEXT NOT NULL,
             sender TEXT,
             amount REAL NOT NULL,
@@ -39,11 +44,30 @@ def init_ledger():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migrate: add unit column if missing
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(transactions)").fetchall()]
+    if "unit" not in cols:
+        conn.execute("ALTER TABLE transactions ADD COLUMN unit TEXT NOT NULL DEFAULT 'main'")
+    conn.commit()
+    conn.close()
+
+
+def _migrate_unit_labels():
+    """One-time migration: set unit='second' for known second-unit tenants."""
+    rent_config = _get_rent_config()
+    conn = sqlite3.connect(DB_PATH)
+    for prop, cfg in rent_config.items():
+        for tenant in cfg.get("tenants_second", []):
+            conn.execute(
+                "UPDATE transactions SET unit = 'second' WHERE property = ? AND sender = ? AND unit = 'main'",
+                (prop, tenant.lower()),
+            )
     conn.commit()
     conn.close()
 
 
 init_ledger()
+_migrate_unit_labels()
 
 
 def _parse_etransfer_email(raw_bytes: bytes):
@@ -138,15 +162,16 @@ def ingest_etransfers() -> list:
             keys_to_delete.append(key)
             continue
 
-        prop = _resolve_property(parsed["sender"], rent_config)
+        prop, unit = _resolve_property(parsed["sender"], rent_config)
         if not prop:
             description = f"Unknown tenant: {parsed['sender']}"
+            unit = "main"
         else:
             description = f"Rent payment from {parsed['sender']}"
 
         conn.execute(
-            "INSERT INTO transactions (date, property, type, sender, amount, description, s3_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (parsed["date"], prop, "rent", parsed["sender"].lower(), parsed["amount"], description, key),
+            "INSERT INTO transactions (date, property, unit, type, sender, amount, description, s3_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (parsed["date"], prop, unit, "rent", parsed["sender"].lower(), parsed["amount"], description, key),
         )
         new_transactions.append({
             "date": parsed["date"],
@@ -167,31 +192,34 @@ def ingest_etransfers() -> list:
 
 
 def get_balance(month: str = None) -> dict:
-    """Get rent balance per property for a given month (YYYY-MM) or all time."""
+    """Get rent balance per property/unit for a given month (YYYY-MM) or all time."""
     rent_config = _get_rent_config()
     conn = sqlite3.connect(DB_PATH)
 
     results = {}
     for prop, cfg in rent_config.items():
-        expected = cfg["monthly_rent"] + cfg["second_unit"]
+        prop_result = {}
+        for unit, expected in [("main", cfg["monthly_rent"]), ("second", cfg["second_unit"])]:
+            if expected == 0:
+                continue
+            if month:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE property = ? AND unit = ? AND type = 'rent' AND date LIKE ?",
+                    (prop, unit, f"{month}%"),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE property = ? AND unit = ? AND type = 'rent'",
+                    (prop, unit),
+                ).fetchone()
 
-        if month:
-            rows = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE property = ? AND type = 'rent' AND date LIKE ?",
-                (prop, f"{month}%"),
-            ).fetchone()
-        else:
-            rows = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE property = ? AND type = 'rent'",
-                (prop,),
-            ).fetchone()
+            received = row[0]
+            entry = {"expected": expected, "received": received}
+            if month:
+                entry["outstanding"] = round(expected - received, 2)
+            prop_result[unit] = entry
 
-        received = rows[0]
-        results[prop] = {
-            "expected": expected,
-            "received": received,
-            "balance": round(received - expected, 2) if month else received,
-        }
+        results[prop] = prop_result
 
     conn.close()
     return results
@@ -200,7 +228,7 @@ def get_balance(month: str = None) -> dict:
 def get_transactions(property_slug: str = "", month: str = "") -> list:
     """Get transactions with optional filters."""
     conn = sqlite3.connect(DB_PATH)
-    query = "SELECT date, property, type, sender, amount, description FROM transactions WHERE 1=1"
+    query = "SELECT date, property, unit, type, sender, amount, description FROM transactions WHERE 1=1"
     params = []
 
     if property_slug:
@@ -215,7 +243,7 @@ def get_transactions(property_slug: str = "", month: str = "") -> list:
     conn.close()
 
     return [
-        {"date": r[0], "property": r[1], "type": r[2], "sender": r[3], "amount": r[4], "description": r[5]}
+        {"date": r[0], "property": r[1], "unit": r[2], "type": r[3], "sender": r[4], "amount": r[5], "description": r[6]}
         for r in rows
     ]
 
@@ -226,6 +254,7 @@ def get_monthly_summary(month: str) -> dict:
     Utilities are attributed to the month they're DUE (payment month),
     not the usage month. The tenant utility bill is sent on the 1st and
     only applies to the main tenant (not second units).
+    Internet is a fixed monthly charge for windmill main only.
     """
     from tools.billing import split_by_usage_month
 
@@ -245,10 +274,19 @@ def get_monthly_summary(month: str) -> dict:
 
     summary = {}
     for prop, cfg in rent_config.items():
-        rent_received = balance[prop]["received"]
-        expected = balance[prop]["expected"]
+        prop_balance = balance.get(prop, {})
 
-        # Utility costs split
+        # Main unit
+        main_bal = prop_balance.get("main", {})
+        main_expected = main_bal.get("expected", cfg["monthly_rent"])
+        main_received = main_bal.get("received", 0)
+
+        # Second unit
+        second_bal = prop_balance.get("second", {})
+        second_expected = second_bal.get("expected", cfg.get("second_unit", 0))
+        second_received = second_bal.get("received", 0)
+
+        # Utility costs (main tenant only)
         landlord_expenses = 0
         tenant_receivable = 0
         if bills.success:
@@ -257,15 +295,39 @@ def get_monthly_summary(month: str) -> dict:
                     landlord_expenses += b["landlord_amount"]
                     tenant_receivable += b["tenant_amount"]
 
-        summary[prop] = {
-            "rent_expected": expected,
-            "rent_received": rent_received,
-            "rent_outstanding": round(expected - rent_received, 2),
-            "tenant_utility_receivable": round(tenant_receivable, 2),
-            "total_receivable": round(expected + tenant_receivable, 2),
-            "total_received": rent_received,
+        # Fixed internet charge (main tenant only)
+        internet = cfg.get("internet", 0)
+        tenant_receivable += internet
+
+        prop_summary = {
+            "main": {
+                "rent_expected": main_expected,
+                "rent_received": main_received,
+                "rent_outstanding": round(main_expected - main_received, 2),
+                "utility_receivable": round(tenant_receivable, 2),
+                "internet_included": internet,
+                "total_receivable": round(main_expected - main_received + tenant_receivable, 2),
+            },
             "utility_expenses_landlord": round(landlord_expenses, 2),
-            "net_income": round(rent_received + tenant_receivable - landlord_expenses, 2),
         }
+
+        if second_expected > 0:
+            prop_summary["second"] = {
+                "rent_expected": second_expected,
+                "rent_received": second_received,
+                "rent_outstanding": round(second_expected - second_received, 2),
+            }
+
+        total_received = main_received + second_received
+        total_expected = main_expected + second_expected
+        prop_summary["totals"] = {
+            "rent_expected": total_expected,
+            "rent_received": total_received,
+            "rent_outstanding": round(total_expected - total_received, 2),
+            "tenant_utility_receivable": round(tenant_receivable, 2),
+            "net_income": round(total_received + tenant_receivable - landlord_expenses, 2),
+        }
+
+        summary[prop] = prop_summary
 
     return summary
