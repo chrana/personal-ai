@@ -201,31 +201,51 @@ def get_transactions(property_slug: str = "", month: str = "") -> list:
 
 
 def get_monthly_summary(month: str) -> dict:
-    """Full P&L for a month: rent in, utilities out, net per property."""
+    """Full P&L for a month: rent in, utilities receivable, net per property.
+
+    Utilities are attributed to the month they're DUE (payment month),
+    not the usage month. The tenant utility bill is sent on the 1st and
+    only applies to the main tenant (not second units).
+    """
     from tools.billing import split_by_usage_month
 
     rent_config = _get_rent_config()
     balance = get_balance(month)
-    bills = split_by_usage_month(month)
+
+    # Previous month's usage = this month's receivable
+    year, mo = int(month[:4]), int(month[5:7])
+    prev_mo = mo - 1
+    prev_year = year
+    if prev_mo == 0:
+        prev_mo = 12
+        prev_year -= 1
+    prev_usage_month = f"{prev_year:04d}-{prev_mo:02d}"
+
+    bills = split_by_usage_month(prev_usage_month)
 
     summary = {}
     for prop, cfg in rent_config.items():
         rent_received = balance[prop]["received"]
         expected = balance[prop]["expected"]
 
-        # Utility expenses (landlord portion)
+        # Utility costs split
         landlord_expenses = 0
+        tenant_receivable = 0
         if bills.success:
             for b in bills.data["bills"]:
                 if b["property"] == prop:
                     landlord_expenses += b["landlord_amount"]
+                    tenant_receivable += b["tenant_amount"]
 
         summary[prop] = {
             "rent_expected": expected,
             "rent_received": rent_received,
             "rent_outstanding": round(expected - rent_received, 2),
-            "utility_expenses": round(landlord_expenses, 2),
-            "net_income": round(rent_received - landlord_expenses, 2),
+            "tenant_utility_receivable": round(tenant_receivable, 2),
+            "total_receivable": round(expected + tenant_receivable, 2),
+            "total_received": rent_received,
+            "utility_expenses_landlord": round(landlord_expenses, 2),
+            "net_income": round(rent_received + tenant_receivable - landlord_expenses, 2),
         }
 
     return summary
