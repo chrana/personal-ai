@@ -120,6 +120,34 @@ TOOL_DEFINITIONS = [
             "required": [],
         },
     },
+    {
+        "name": "rent_balance",
+        "description": "Check rent payment status: how much was expected, received, and outstanding for a given month. Also ingests any new e-transfer notifications before reporting.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "month": {
+                    "type": "string",
+                    "description": "Month in YYYY-MM format. If omitted, returns all-time totals.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "monthly_pnl",
+        "description": "Get full profit & loss for a month: rent income received, utility expenses (landlord portion), and net income per property.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "month": {
+                    "type": "string",
+                    "description": "Month in YYYY-MM format",
+                },
+            },
+            "required": ["month"],
+        },
+    },
 ]
 
 
@@ -212,6 +240,17 @@ async def run_tool_call(name: str, input_data: dict) -> ToolResult:
         property_slug = resolve_property(prop) if prop else ""
         bills = list_bills(property_slug, input_data.get("provider", ""))
         result = ToolResult(success=True, data={"bills": bills})
+    elif name == "rent_balance":
+        from tools.ledger import ingest_etransfers, get_balance
+        ingest_etransfers()
+        month = input_data.get("month", "")
+        balance = get_balance(month if month else None)
+        result = ToolResult(success=True, data=balance)
+    elif name == "monthly_pnl":
+        from tools.ledger import ingest_etransfers, get_monthly_summary
+        ingest_etransfers()
+        summary = get_monthly_summary(input_data["month"])
+        result = ToolResult(success=True, data=summary)
     else:
         result = ToolResult(success=False, error=f"Unknown tool: {name}")
     duration_ms = (time.time() - start) * 1000
@@ -233,6 +272,10 @@ def _describe_tool_call(name: str, input_data: dict) -> str:
         return f"Calculating splits for {month}..."
     elif name == "list_bills":
         return f"Listing bills{' for ' + prop if prop else ''}..."
+    elif name == "rent_balance":
+        return f"Checking rent payments{' for ' + month if month else ''}..."
+    elif name == "monthly_pnl":
+        return f"Calculating P&L for {month}..."
     return f"Running {name}..."
 
 
