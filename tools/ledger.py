@@ -99,29 +99,43 @@ def _parse_etransfer_email(raw_bytes: bytes):
     }
 
 
+def _dedup_key(parsed: dict) -> str:
+    """Unique key for a payment: sender+amount+date. Prevents duplicates from multiple forwards."""
+    return f"{parsed['sender'].lower()}|{parsed['amount']}|{parsed['date']}"
+
+
 def ingest_etransfers() -> list:
-    """Scan S3 for new e-transfer emails and add to ledger."""
+    """Scan S3 for new e-transfer emails, add to ledger, then delete from S3."""
     rent_config = _get_rent_config()
 
     resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=ETRANSFER_PREFIX)
     objects = [obj for obj in resp.get("Contents", []) if "SETUP" not in obj["Key"]]
 
+    if not objects:
+        return []
+
     conn = sqlite3.connect(DB_PATH)
     new_transactions = []
+    keys_to_delete = []
 
     for obj in objects:
         key = obj["Key"]
-
-        # Skip if already processed
-        existing = conn.execute(
-            "SELECT id FROM transactions WHERE s3_key = ?", (key,)
-        ).fetchone()
-        if existing:
-            continue
-
         raw = s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
         parsed = _parse_etransfer_email(raw)
+
         if not parsed:
+            keys_to_delete.append(key)
+            continue
+
+        # Dedup: skip if same sender+amount+date already in ledger
+        dedup = _dedup_key(parsed)
+        existing = conn.execute(
+            "SELECT id FROM transactions WHERE sender = ? AND amount = ? AND date = ?",
+            (parsed["sender"].lower(), parsed["amount"], parsed["date"]),
+        ).fetchone()
+
+        if existing:
+            keys_to_delete.append(key)
             continue
 
         prop = _resolve_property(parsed["sender"], rent_config)
@@ -132,7 +146,7 @@ def ingest_etransfers() -> list:
 
         conn.execute(
             "INSERT INTO transactions (date, property, type, sender, amount, description, s3_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (parsed["date"], prop, "rent", parsed["sender"], parsed["amount"], description, key),
+            (parsed["date"], prop, "rent", parsed["sender"].lower(), parsed["amount"], description, key),
         )
         new_transactions.append({
             "date": parsed["date"],
@@ -140,9 +154,15 @@ def ingest_etransfers() -> list:
             "sender": parsed["sender"],
             "amount": parsed["amount"],
         })
+        keys_to_delete.append(key)
 
     conn.commit()
     conn.close()
+
+    # Delete processed emails from S3
+    for key in keys_to_delete:
+        s3.delete_object(Bucket=BUCKET, Key=key)
+
     return new_transactions
 
 
